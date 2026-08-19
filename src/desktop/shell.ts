@@ -154,6 +154,13 @@ export function makeLoginItemSettings(platform: NodeJS.Platform, enabled: boolea
     : Object.freeze({ openAtLogin: enabled, path: executable, args: Object.freeze([APP_START_HIDDEN_ARG]) });
 }
 
+/** XDG desktop-entry quoted Exec token, never a shell command. */
+export function escapeDesktopExecPath(value: unknown): string | undefined {
+  const hasControl = typeof value === "string" && [...value].some((character) => { const code = character.charCodeAt(0); return code <= 31 || code === 127; });
+  if (typeof value !== "string" || value === "" || hasControl) return undefined;
+  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$").replaceAll("`", "\\`").replaceAll("%", "%%");
+}
+
 const RESERVED_WINDOWS_BASENAMES = new Set(["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]);
 
 export function sanitizeDownloadBasename(value: unknown): string | undefined {

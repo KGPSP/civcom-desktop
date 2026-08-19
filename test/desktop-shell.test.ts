@@ -11,6 +11,7 @@ import {
   createWebPreferences,
   isHiddenStart,
   makeLoginItemSettings,
+  escapeDesktopExecPath,
   resolveDownloadDestination,
   sanitizeDownloadBasename,
   UpdateScheduler,
@@ -72,6 +73,10 @@ describe("desktop shell policy", () => {
     });
     expect(makeLoginItemSettings("darwin", true)).toEqual({ openAtLogin: true, type: "mainAppService" });
     expect(makeLoginItemSettings("win32", false, "C:\\CivCom.exe")).toEqual({ openAtLogin: false, path: "C:\\CivCom.exe", args: ["--hidden"] });
+  });
+
+  it("builds a quoted XDG Exec path without shell interpolation", () => {
+    expect(escapeDesktopExecPath('/opt/Civ Com/$cash`tick\\quote"100%')).toBe('/opt/Civ Com/\\$cash\\`tick\\\\quote\\"100%%');
   });
 
   it("accepts only sensible on-screen persisted bounds and writes atomically", () => {

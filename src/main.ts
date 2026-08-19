@@ -3,7 +3,7 @@ import electronUpdater from "electron-updater";
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, win32 } from "node:path";
-import { APPROVED_DOWNLOAD_PAGE, BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, isHiddenStart, makeLoginItemSettings, reserveDownloadDestination, UpdateScheduler } from "./desktop/shell.js";
+import { APPROVED_DOWNLOAD_PAGE, BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, escapeDesktopExecPath, isHiddenStart, makeLoginItemSettings, reserveDownloadDestination, UpdateScheduler } from "./desktop/shell.js";
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
 import { resolveStartUrl } from "./security/url-policy.js";
 import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createTraySafely, createWindowCallbacks } from "./desktop/electron-adapters.js";
@@ -58,7 +58,8 @@ function applyLoginStartup(enabled: boolean): void {
     const xdgConfig = process.env.XDG_CONFIG_HOME;
     const path = join(xdgConfig !== undefined && xdgConfig.startsWith("/") ? xdgConfig : join(app.getPath("home"), ".config"), "autostart", "civcom.desktop");
     if (!enabled) { try { rmSync(path); } catch { /* already disabled */ } return; }
-    const executable = process.execPath.replaceAll("%", "%%").replaceAll("$", "\\$").replaceAll("`", "\\`").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    const executable = escapeDesktopExecPath(process.execPath);
+    if (executable === undefined) return;
     writeAtomic(path, `[Desktop Entry]\nType=Application\nName=CivCom\nExec="${executable}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
     return;
   }
@@ -101,7 +102,7 @@ function createTray(logger: RotatingSafeLogger): boolean {
 function configureSession(): Electron.Session {
   const civcomSession = session.fromPartition("persist:civcom");
   const permission = createPermissionCallbacks();
-  civcomSession.setPermissionCheckHandler((_contents, name, _origin, details) => permission.check(name, details));
+  civcomSession.setPermissionCheckHandler((_contents, name, requestingOrigin, details) => permission.check(name, requestingOrigin, details));
   civcomSession.setPermissionRequestHandler((_contents, name, callback, details) => callback(permission.request(name, details)));
   civcomSession.setDevicePermissionHandler(() => false);
   // Task 4 installs setDisplayMediaRequestHandler; this shell never selects a capture source.

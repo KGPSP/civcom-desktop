@@ -11,14 +11,25 @@ function ownValue(input: unknown, key: string): unknown {
   } catch { return undefined; }
 }
 
+function trustedOrigin(value: unknown): string | undefined {
+  const result = classifyTrustedOrigin(value);
+  return result.kind === "trusted" ? `https://${result.service}.soia.info/` : undefined;
+}
+
 function frameOrigin(details: unknown): string | undefined {
-  const values = [ownValue(details, "securityOrigin"), ownValue(details, "requestingUrl"), ownValue(details, "requestingOrigin")]
+  const values = [ownValue(details, "securityOrigin"), ownValue(details, "requestingUrl")]
     .filter((value): value is string => typeof value === "string");
   if (values.length === 0) return undefined;
-  const services = values.map((value) => classifyTrustedOrigin(value)).map((result) => result.kind === "trusted" ? result.service : undefined);
-  if (services.some((service) => service === undefined) || new Set(services).size !== 1) return undefined;
-  const service = services[0];
-  return service === undefined ? undefined : `https://${service}.soia.info/`;
+  const origins = values.map(trustedOrigin);
+  return origins.some((origin) => origin === undefined) || new Set(origins).size !== 1 ? undefined : origins[0];
+}
+
+function checkOrigin(requestingOrigin: unknown, details: unknown): string | undefined {
+  const origin = trustedOrigin(requestingOrigin);
+  if (origin === undefined) return undefined;
+  const fromDetails = frameOrigin(details);
+  const hasDetailOrigin = ownValue(details, "securityOrigin") !== undefined || ownValue(details, "requestingUrl") !== undefined;
+  return !hasDetailOrigin || fromDetails === origin ? origin : undefined;
 }
 
 function mediaTypes(details: unknown, singular: boolean): readonly string[] | undefined {
@@ -28,17 +39,16 @@ function mediaTypes(details: unknown, singular: boolean): readonly string[] | un
 }
 
 export function createPermissionCallbacks(): Readonly<{
-  check(permission: unknown, details: unknown): boolean;
+  check(permission: unknown, requestingOrigin: unknown, details: unknown): boolean;
   request(permission: unknown, details: unknown): boolean;
 }> {
-  const decide = (permission: unknown, details: unknown, singular: boolean): boolean => {
-    const origin = frameOrigin(details);
+  const decide = (permission: unknown, origin: string | undefined, details: unknown, singular: boolean): boolean => {
     if (origin === undefined) return false;
     const decision = authorizePermissionRequest({ origin, permission });
     if (decision.kind !== "allow") return false;
     return decision.permission !== "media" || mediaTypes(details, singular) !== undefined;
   };
-  return Object.freeze({ check: (permission, details) => decide(permission, details, true), request: (permission, details) => decide(permission, details, false) });
+  return Object.freeze({ check: (permission, requestingOrigin, details) => decide(permission, checkOrigin(requestingOrigin, details), details, true), request: (permission, details) => decide(permission, frameOrigin(details), details, false) });
 }
 
 export type Preventable = Readonly<{ preventDefault(): void }>;
