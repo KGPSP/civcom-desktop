@@ -1,5 +1,5 @@
-import { pathToFileURL } from "node:url";
 import type { PickerHandle, PickerPresentation } from "./coordinator.js";
+import { PICKER_DOCUMENT_URL } from "./local-protocol.js";
 import { createPickerNavigationCallbacks, createPickerWebPreferences, validatePickerIpcSender } from "./picker-security.js";
 
 export const PICKER_IPC_CHANNELS = Object.freeze({
@@ -34,10 +34,9 @@ function ownGeneration(value: unknown): unknown {
 export function createLocalPickerHost(dependencies: Readonly<{
   ipcMain: Electron.IpcMain;
   createWindow(options: Electron.BrowserWindowConstructorOptions): Electron.BrowserWindow;
-  documentPath: string;
   preloadPath: string;
 }>): LocalPickerHost {
-  const documentUrl = pathToFileURL(dependencies.documentPath).href;
+  const documentUrl = PICKER_DOCUMENT_URL;
   const preferences = createPickerWebPreferences(dependencies.preloadPath);
   if (preferences === undefined) throw new Error("invalid-picker-preload");
   let active: ActivePicker | undefined;
@@ -116,7 +115,7 @@ export function createLocalPickerHost(dependencies: Readonly<{
           } catch { deactivate(candidate, Object.freeze({ kind: "cancel" }), true); }
         });
         window.on("closed", () => deactivate(candidate, Object.freeze({ kind: "cancel" }), true));
-        void Promise.resolve(window.loadFile(dependencies.documentPath)).catch(() => deactivate(candidate, Object.freeze({ kind: "cancel" }), true));
+        void Promise.resolve(window.loadURL(documentUrl)).catch(() => deactivate(candidate, Object.freeze({ kind: "cancel" }), true));
       } catch {
         deactivate(candidate, Object.freeze({ kind: "cancel" }), true);
       }

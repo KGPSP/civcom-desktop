@@ -25,10 +25,10 @@ describe("local picker isolation", () => {
   });
 
   it("blocks picker popups and every navigation away from its exact local document", () => {
-    const gate = createPickerNavigationCallbacks("file:///Applications/CivCom/dist/screen-share/picker.html");
+    const gate = createPickerNavigationCallbacks("civcom-local://picker/index.html");
     expect(gate.windowOpen()).toEqual({ action: "deny" });
     const allowed = { preventDefault: vi.fn() };
-    gate.navigate(allowed, "file:///Applications/CivCom/dist/screen-share/picker.html");
+    gate.navigate(allowed, "civcom-local://picker/index.html");
     expect(allowed.preventDefault).not.toHaveBeenCalled();
     for (const url of ["https://civcom.soia.info/", "file:///tmp/picker.html", "data:text/html,x"] ) {
       const event = { preventDefault: vi.fn() };
@@ -80,7 +80,7 @@ describe("local picker isolation", () => {
 });
 
 describe("picker IPC boundary", () => {
-  function contents(url = "file:///Applications/CivCom/dist/screen-share/picker.html") {
+  function contents(url = "civcom-local://picker/index.html") {
     const mainFrame = { url };
     return { mainFrame, getURL: () => url, isDestroyed: () => false };
   }
@@ -92,7 +92,7 @@ describe("picker IPC boundary", () => {
     expect(validatePickerIpcSender(context, { sender: contents("https://civcom.soia.info/"), senderFrame: {} }, 4)).toBe(false);
     expect(validatePickerIpcSender(context, { sender: expectedContents, senderFrame: { url: expectedContents.getURL() } }, 4)).toBe(false);
     expect(validatePickerIpcSender(context, { sender: expectedContents, senderFrame: expectedContents.mainFrame }, 3)).toBe(false);
-    const wrongFile = contents("file:///tmp/picker.html");
+    const wrongFile = contents("civcom-local://picker/unknown.html");
     expect(validatePickerIpcSender(context, { sender: wrongFile, senderFrame: wrongFile.mainFrame }, 4)).toBe(false);
   });
 

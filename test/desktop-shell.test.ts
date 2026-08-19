@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { PRODUCTION_CIVCOM_URL } from "../src/security/url-policy.js";
 import {
   APP_START_HIDDEN_ARG,
@@ -11,10 +11,10 @@ import {
   createWebPreferences,
   isHiddenStart,
   makeLoginItemSettings,
+  resolveLinuxAutostartExecutable,
   escapeDesktopExecPath,
   resolveDownloadDestination,
   sanitizeDownloadBasename,
-  UpdateScheduler,
   type BoundsFile,
   type DisplayArea
 } from "../src/desktop/shell.js";
@@ -79,6 +79,17 @@ describe("desktop shell policy", () => {
     expect(escapeDesktopExecPath('/opt/Civ Com/$cash`tick\\quote"100%')).toBe('/opt/Civ Com/\\$cash\\`tick\\\\quote\\"100%%');
   });
 
+  it("uses the verified persistent APPIMAGE path for Linux autostart and never the ephemeral mount", () => {
+    const verified = (path: string): string | undefined => path === "/home/user/CivCom.AppImage" ? path : undefined;
+    expect(resolveLinuxAutostartExecutable({ packageType: "appimage", executable: "/tmp/.mount_CivCom/civcom", appImagePath: "/home/user/CivCom.AppImage", resolveAppImage: verified })).toBe("/home/user/CivCom.AppImage");
+    expect(resolveLinuxAutostartExecutable({ packageType: "deb", executable: "/opt/CivCom/civcom", appImagePath: "/home/user/CivCom.AppImage", resolveAppImage: verified })).toBe("/opt/CivCom/civcom");
+    expect(resolveLinuxAutostartExecutable({ packageType: "appimage", executable: "/tmp/.mount_CivCom/civcom", appImagePath: "relative.AppImage", resolveAppImage: verified })).toBeUndefined();
+    expect(resolveLinuxAutostartExecutable({ packageType: "appimage", executable: "/tmp/.mount_CivCom/civcom", appImagePath: "/home/user/link.AppImage", resolveAppImage: () => "/home/user/real.AppImage" })).toBeUndefined();
+    expect(resolveLinuxAutostartExecutable({ packageType: "appimage", executable: "/tmp/.mount_CivCom/civcom", appImagePath: "/home/user/bad\n.AppImage", resolveAppImage: () => "/home/user/bad\n.AppImage" })).toBeUndefined();
+    expect(resolveLinuxAutostartExecutable({ packageType: "appimage", executable: "/tmp/.mount_CivCom/civcom", appImagePath: "/home/user/CivCom.AppImage", resolveAppImage: () => { throw new Error("inspection failed"); } })).toBeUndefined();
+    expect(resolveLinuxAutostartExecutable({ packageType: "unknown", executable: "/tmp/.mount_CivCom/civcom", resolveAppImage: verified })).toBeUndefined();
+  });
+
   it("accepts only sensible on-screen persisted bounds and writes atomically", () => {
     const area: DisplayArea = { x: 0, y: 0, width: 1920, height: 1080 };
     const storage = new Map<string, string>();
@@ -98,9 +109,15 @@ describe("desktop shell policy", () => {
     expect(writes[0]).not.toContain("url");
   });
 
-  it("uses a local offline page and retries only the fixed resolved start URL", () => {
-    expect(createOfflinePageUrl("/Application/CivCom/offline.html")).toBe("file:///Application/CivCom/offline.html");
+  it("uses a self-contained data offline page and retries only the fixed resolved start URL", () => {
+    const offlineUrl = createOfflinePageUrl("/Application/CivCom/offline.html");
+    expect(offlineUrl.startsWith("data:text/html;charset=utf-8,")).toBe(true);
+    const html = decodeURIComponent(offlineUrl.slice("data:text/html;charset=utf-8,".length));
+    expect(html).toContain('href="#retry"');
+    expect(html).toContain("default-src 'none'");
+    expect(html).not.toMatch(/<script|<link|<img|https?:|file:/i);
     expect(PRODUCTION_CIVCOM_URL).toBe("https://civcom.soia.info/");
+    expect(createRuntimeNavigationGate(offlineUrl).navigate("civcom-local://picker/index.html")).toEqual({ allow: false });
   });
 
   it("rejects unsafe downloads and allocates collision-safe filenames without opening them", async () => {
@@ -159,42 +176,5 @@ describe("safe local logging", () => {
     expect(output).toContain('"code":"UNCLASSIFIED"');
     expect(output).not.toContain("token=abc");
     expect(output).not.toContain("secret");
-  });
-});
-
-describe("update scheduler", () => {
-  it("checks packaged apps on start, every six hours, serializes calls, and never runs in dev", async () => {
-    const intervals: Array<() => void> = [];
-    let checks = 0;
-    let release!: () => void;
-    const pending = new Promise<void>((resolve) => { release = resolve; });
-    const scheduler = new UpdateScheduler({
-      isPackaged: true,
-      platform: "darwin",
-      check: async () => { checks += 1; await pending; },
-      every: (callback, ms) => { expect(ms).toBe(6 * 60 * 60 * 1000); intervals.push(callback); return 9; },
-      clearEvery: vi.fn(),
-      unref: vi.fn()
-    });
-    const first = scheduler.start();
-    await Promise.resolve();
-    intervals[0]?.();
-    expect(checks).toBe(1);
-    release();
-    await first;
-    await scheduler.manual();
-    expect(checks).toBe(2);
-    scheduler.stop();
-
-    const dev = new UpdateScheduler({ isPackaged: false, platform: "darwin", check: vi.fn(), every: vi.fn(), clearEvery: vi.fn(), unref: vi.fn() });
-    await dev.start();
-    expect(dev.enabled).toBe(false);
-  });
-
-  it("uses a manual approved path for DEB instead of downloading an update", async () => {
-    const openManual = vi.fn();
-    const scheduler = new UpdateScheduler({ isPackaged: true, platform: "linux", isDeb: true, check: vi.fn(), openManual, every: vi.fn(), clearEvery: vi.fn(), unref: vi.fn() });
-    await scheduler.manual();
-    expect(openManual).toHaveBeenCalledOnce();
   });
 });

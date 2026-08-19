@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "releaseBaseUrl": "https://github.com/KGPSP/civcom-desktop/releases/latest/download",
+  "latestReleaseUrl": "https://github.com/KGPSP/civcom-desktop/releases/latest",
+  "assets": {
+    "windowsInstaller": "CivCom-Windows-x64.exe",
+    "windowsBlockmap": "CivCom-Windows-x64.exe.blockmap",
+    "windowsMetadata": "latest.yml",
+    "macDmg": "CivCom-macOS-universal.dmg",
+    "macZip": "CivCom-macOS-universal.zip",
+    "macBlockmap": "CivCom-macOS-universal.zip.blockmap",
+    "macMetadata": "latest-mac.yml",
+    "linuxAppImage": "CivCom-Linux-x86_64.AppImage",
+    "linuxDeb": "CivCom-Linux-x86_64.deb",
+    "linuxMetadata": "latest-linux.yml",
+    "buildSbom": "CivCom-build.spdx.json",
+    "checksums": "SHA256SUMS"
+  }
+}

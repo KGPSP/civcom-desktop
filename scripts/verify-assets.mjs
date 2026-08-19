@@ -27,7 +27,7 @@ const pathCommand = /[MmZzLlHhVvCcSsQqTtAa]/;
 const plainLabel = /^[\p{L}\p{N}\p{Zs}.,:;!?'()-]{1,120}$/u;
 const xmlEntityReference = /&(?:#\d+|#x[\da-f]+|[a-z][\w.-]*);/i;
 const xmlDtd = /<!DOCTYPE\b|<!ENTITY\b/i;
-const requiredRasterSizes = new Map([["civcom-tray.png", 44], ["civcom-tray@2x.png", 88]]);
+const requiredRasterSizes = new Map([["civcom.png", 1024], ["civcom-tray.png", 44], ["civcom-tray@2x.png", 88]]);
 
 function pngSize(contents) {
   return contents.length >= 24 && contents.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
@@ -227,7 +227,7 @@ export function isSafeSvgContent(content) {
   return isSafe && rootSeen && elementDepth === 0;
 }
 
-export async function verifyAssetDirectory(directory = assetDirectory) {
+export async function verifyAssetDirectory(directory = assetDirectory, root = true) {
   const seen = new Set();
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     seen.add(entry.name);
@@ -239,7 +239,7 @@ export async function verifyAssetDirectory(directory = assetDirectory) {
     }
 
     if (metadata.isDirectory()) {
-      await verifyAssetDirectory(location);
+      await verifyAssetDirectory(location, false);
       continue;
     }
 
@@ -259,7 +259,7 @@ export async function verifyAssetDirectory(directory = assetDirectory) {
       if (dimensions === undefined || dimensions.width !== expectedSize || dimensions.height !== expectedSize) throw new Error(`Invalid tray raster derivative: ${entry.name}`);
     }
   }
-  if (resolve(directory) === resolve(assetDirectory)) for (const name of requiredRasterSizes.keys()) if (!seen.has(name)) throw new Error(`Missing required tray raster derivative: ${name}`);
+  if (root) for (const name of requiredRasterSizes.keys()) if (!seen.has(name)) throw new Error(`Missing required raster derivative: ${name}`);
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === thisFile) {

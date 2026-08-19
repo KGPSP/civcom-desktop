@@ -3,11 +3,10 @@ import {
   authorizePermissionRequest,
   authorizeTopLevelNavigation
 } from "../security/url-policy.js";
-import { pathToFileURL } from "node:url";
+import { isAbsolute } from "node:path";
 
 export const APP_START_HIDDEN_ARG = "--hidden";
 export const CIVCOM_PARTITION = "persist:civcom";
-export const APPROVED_DOWNLOAD_PAGE = "https://github.com/KGPSP/civcom-desktop/releases";
 
 export type WebPreferences = Readonly<{
   nodeIntegration: false;
@@ -36,7 +35,9 @@ export type NavigationResult = Readonly<{ allow: boolean }>;
 export type WindowOpenResult = Readonly<{ action: "external" | "deny" }>;
 
 export function createOfflinePageUrl(filePath: string): string {
-  return pathToFileURL(filePath).href;
+  if (typeof filePath !== "string") throw new Error("invalid-offline-page-request");
+  const html = "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'none'; script-src 'none'; img-src 'none'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; manifest-src 'none'; frame-ancestors 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>CivCom — brak połączenia</title></head><body><main><h1>Brak połączenia z CivCom</h1><p>Nie udało się wczytać usługi. Sprawdź połączenie z internetem i spróbuj ponownie.</p><a id=\"retry\" href=\"#retry\">Spróbuj ponownie</a></main></body></html>";
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
 export function createRuntimeNavigationGate(offlineUrl: string): Readonly<{
@@ -154,6 +155,29 @@ export function makeLoginItemSettings(platform: NodeJS.Platform, enabled: boolea
     : Object.freeze({ openAtLogin: enabled, path: executable, args: Object.freeze([APP_START_HIDDEN_ARG]) });
 }
 
+function safeAbsoluteExecutable(value: unknown): value is string {
+  return typeof value === "string" && value !== "" && value.length <= 4096 && isAbsolute(value) && ![...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+}
+
+export function resolveLinuxAutostartExecutable(input: Readonly<{
+  packageType: string;
+  executable: unknown;
+  appImagePath?: unknown;
+  resolveAppImage(path: string): string | undefined;
+}>): string | undefined {
+  if (input.packageType === "deb") return safeAbsoluteExecutable(input.executable) ? input.executable : undefined;
+  if (input.packageType !== "appimage" || !safeAbsoluteExecutable(input.appImagePath)) return undefined;
+  try {
+    const resolved = input.resolveAppImage(input.appImagePath);
+    return resolved === input.appImagePath && safeAbsoluteExecutable(resolved) ? resolved : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** XDG desktop-entry quoted Exec token, never a shell command. */
 export function escapeDesktopExecPath(value: unknown): string | undefined {
   const hasControl = typeof value === "string" && [...value].some((character) => { const code = character.charCodeAt(0); return code <= 31 || code === 127; });
@@ -210,63 +234,4 @@ export async function reserveDownloadDestination(
     if (await reserve(candidate)) return candidate;
   }
   return undefined;
-}
-
-export type UpdateSchedulerDependencies = Readonly<{
-  isPackaged: boolean;
-  platform: NodeJS.Platform;
-  isDeb?: boolean;
-  check: () => Promise<void>;
-  openManual?: () => void | Promise<void>;
-  onError?: () => void;
-  every: (callback: () => void, milliseconds: number) => unknown;
-  clearEvery: (handle: unknown) => void;
-  unref: (handle: unknown) => void;
-}>;
-
-export class UpdateScheduler {
-  #running = false;
-  #timer: unknown;
-  public readonly enabled: boolean;
-
-  public constructor(private readonly dependencies: UpdateSchedulerDependencies) {
-    this.enabled = dependencies.isPackaged;
-  }
-
-  public async start(): Promise<void> {
-    if (!this.enabled || this.dependencies.isDeb === true) return;
-    if (this.#timer === undefined) {
-      this.#timer = this.dependencies.every(() => { void this.check(); }, 6 * 60 * 60 * 1000);
-      this.dependencies.unref(this.#timer);
-    }
-    await this.check();
-  }
-
-  public async manual(): Promise<void> {
-    if (!this.enabled) return;
-    if (this.dependencies.isDeb === true) {
-      try { await this.dependencies.openManual?.(); } catch { this.dependencies.onError?.(); }
-      return;
-    }
-    await this.check();
-  }
-
-  public stop(): void {
-    if (this.#timer !== undefined) {
-      this.dependencies.clearEvery(this.#timer);
-      this.#timer = undefined;
-    }
-  }
-
-  private async check(): Promise<void> {
-    if (this.#running) return;
-    this.#running = true;
-    try {
-      await this.dependencies.check();
-    } catch {
-      this.dependencies.onError?.();
-    } finally {
-      this.#running = false;
-    }
-  }
 }

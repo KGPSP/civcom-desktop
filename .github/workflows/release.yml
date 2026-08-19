@@ -1,0 +1,231 @@
+name: Protected production release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+concurrency:
+  group: production-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    environment: production-release
+    permissions:
+      contents: read
+    env:
+      CIVCOM_BUILD_MODE: production
+    steps:
+      - name: Checkout exact tagged revision
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - run: node scripts/release-preflight.mjs
+
+  build-windows:
+    needs: preflight
+    runs-on: windows-2025
+    environment: production-release
+    permissions:
+      contents: read
+    env:
+      CIVCOM_BUILD_MODE: production
+      CIVCOM_WINDOWS_PUBLISHER_DN: ${{ vars.CIVCOM_WINDOWS_PUBLISHER_DN }}
+      CSC_LINK: ${{ secrets.CIVCOM_WINDOWS_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CIVCOM_WINDOWS_CSC_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run package:win
+      - run: npm run package:verify -- --mode production --target windows
+      - run: node scripts/stage-platform-artifacts.mjs windows
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PRODUCTION-windows
+          path: release/staged/windows/
+          if-no-files-found: error
+          retention-days: 1
+
+  build-macos:
+    needs: preflight
+    runs-on: macos-15
+    environment: production-release
+    permissions:
+      contents: read
+    env:
+      CIVCOM_BUILD_MODE: production
+      CSC_LINK: ${{ secrets.CIVCOM_MACOS_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CIVCOM_MACOS_CSC_KEY_PASSWORD }}
+      APPLE_TEAM_ID: ${{ vars.CIVCOM_APPLE_TEAM_ID }}
+      APPLE_API_KEY_ID: ${{ secrets.CIVCOM_APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.CIVCOM_APPLE_API_ISSUER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Materialize notarization key in the runner temporary directory
+        shell: bash
+        env:
+          CIVCOM_APPLE_API_KEY_CONTENT: ${{ secrets.CIVCOM_APPLE_API_KEY }}
+        run: |
+          set -eu
+          key_path="$RUNNER_TEMP/civcom-notarization-key.p8"
+          umask 077
+          printf '%s' "$CIVCOM_APPLE_API_KEY_CONTENT" > "$key_path"
+          chmod 0600 "$key_path"
+          test -s "$key_path"
+          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
+      - run: npm run package:mac
+      - run: npm run package:verify -- --mode production --target macos
+      - run: node scripts/stage-platform-artifacts.mjs macos
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PRODUCTION-macos
+          path: release/staged/macos/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove temporary notarization key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/civcom-notarization-key.p8"
+
+  build-linux:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    environment: production-release
+    permissions:
+      contents: read
+    env:
+      CIVCOM_BUILD_MODE: production
+      CIVCOM_LINUX_MAINTAINER: ${{ vars.CIVCOM_LINUX_MAINTAINER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run package:linux
+      - run: npm run package:verify -- --mode production --target linux
+      - run: node scripts/stage-platform-artifacts.mjs linux
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PRODUCTION-linux
+          path: release/staged/linux/
+          if-no-files-found: error
+          retention-days: 1
+
+  assemble:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-24.04
+    environment: production-release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          pattern: PRODUCTION-*
+          path: release/incoming
+      - run: node scripts/assemble-release.mjs release/incoming release/assembled
+      - run: npm run release:sbom
+      - run: npm run release:sha256
+      - run: npm run release:verify
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PRODUCTION-assembled
+          path: release/assembled/
+          if-no-files-found: error
+          retention-days: 1
+
+  attest:
+    needs: assemble
+    runs-on: ubuntu-24.04
+    environment: production-release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: PRODUCTION-assembled
+          path: release/assembled
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: release/assembled/*
+      - name: Attest build SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34
+        with:
+          subject-path: release/assembled/*
+          sbom-path: release/assembled/CivCom-build.spdx.json
+      - name: Verify attestations before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh attestation verify release/assembled/* --repo "${{ github.repository }}"
+
+  publish:
+    needs: [assemble, attest]
+    runs-on: ubuntu-24.04
+    environment: production-release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CIVCOM_ALLOW_PUBLICATION: confirmed
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: PRODUCTION-assembled
+          path: release/assembled
+      - name: Create and upload draft
+        run: node scripts/publish-release.mjs draft release/assembled
+      - name: Verify remote draft assets
+        run: node scripts/publish-release.mjs verify-draft release/assembled
+      - name: Publish only after draft verification
+        run: node scripts/publish-release.mjs publish release/assembled

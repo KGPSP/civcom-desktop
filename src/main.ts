@@ -1,9 +1,10 @@
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, screen, session, shell, Tray, webContents, type MenuItemConstructorOptions } from "electron";
-import electronUpdater from "electron-updater";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, protocol, screen, session, shell, Tray, webContents, type MenuItemConstructorOptions } from "electron";
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, win32 } from "node:path";
-import { APPROVED_DOWNLOAD_PAGE, BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, escapeDesktopExecPath, isHiddenStart, makeLoginItemSettings, reserveDownloadDestination, UpdateScheduler } from "./desktop/shell.js";
+import { BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, escapeDesktopExecPath, isHiddenStart, makeLoginItemSettings, reserveDownloadDestination, resolveLinuxAutostartExecutable } from "./desktop/shell.js";
+import { createUpdateController, detectPackageType, LATEST_RELEASE_PAGE, type PackageType, type UpdateController } from "./desktop/updater.js";
+import { createPackagedSmokeResult, isPackagedSmokeRequested, packagedSmokeResultPath } from "./desktop/packaged-smoke.js";
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
 import { resolveStartUrl } from "./security/url-policy.js";
 import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createTraySafely, createWindowCallbacks } from "./desktop/electron-adapters.js";
@@ -11,15 +12,17 @@ import { DisplayMediaCoordinator } from "./screen-share/coordinator.js";
 import { watchFrameLifetime } from "./screen-share/frame-lifetime.js";
 import { installDisplayMediaRequestHandler } from "./screen-share/install.js";
 import { createLocalPickerHost } from "./screen-share/local-picker-host.js";
+import { installPickerProtocol, registerLocalScheme } from "./screen-share/local-protocol.js";
 import type { CaptureSourceCandidate } from "./screen-share/source-catalog.js";
 
-const { autoUpdater } = electronUpdater;
 const SCREEN_SHARE_NATIVE_OPERATION_TIMEOUT_MS = 120_000;
+
+registerLocalScheme(protocol);
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
-let updater: UpdateScheduler | undefined;
+let updater: UpdateController | undefined;
 let activationPending = false;
 let trayAvailable = false;
 const downloadReservations = new Set<string>();
@@ -60,12 +63,21 @@ function readPreferences(): Preferences | undefined {
   } catch { return undefined; }
 }
 function writePreferences(preferences: Preferences): void { writeAtomic(preferencesPath(), JSON.stringify(preferences)); }
-function applyLoginStartup(enabled: boolean): void {
+function resolveRealAppImage(path: string): string | undefined {
+  try {
+    const metadata = lstatSync(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return undefined;
+    const resolved = realpathSync(path);
+    return resolved === path ? resolved : undefined;
+  } catch { return undefined; }
+}
+function applyLoginStartup(enabled: boolean, packageType: PackageType): void {
   if (process.platform === "linux") {
     const xdgConfig = process.env.XDG_CONFIG_HOME;
     const path = join(xdgConfig !== undefined && xdgConfig.startsWith("/") ? xdgConfig : join(app.getPath("home"), ".config"), "autostart", "civcom.desktop");
     if (!enabled) { try { rmSync(path); } catch { /* already disabled */ } return; }
-    const executable = escapeDesktopExecPath(process.execPath);
+    const selected = resolveLinuxAutostartExecutable({ packageType, executable: process.execPath, ...(process.env.APPIMAGE === undefined ? {} : { appImagePath: process.env.APPIMAGE }), resolveAppImage: resolveRealAppImage });
+    const executable = escapeDesktopExecPath(selected);
     if (executable === undefined) return;
     writeAtomic(path, `[Desktop Entry]\nType=Application\nName=CivCom\nExec="${executable}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
     return;
@@ -75,13 +87,13 @@ function applyLoginStartup(enabled: boolean): void {
     ? { openAtLogin: settings.openAtLogin, type: settings.type }
     : { openAtLogin: settings.openAtLogin, path: settings.path, args: [...settings.args] });
 }
-async function promptForAutostart(): Promise<void> {
+async function promptForAutostart(packageType: PackageType): Promise<void> {
   if (!app.isPackaged) return;
   const state = createFirstRunState(readPreferences());
   if (!state.promptAutostart) return;
   const response = await dialog.showMessageBox({ type: "question", buttons: ["Włącz", "Nie włączaj"], defaultId: 0, cancelId: 1, title: "CivCom", message: "Czy włączać automatyczne uruchamianie CivCom po zalogowaniu do systemu?" });
   const enabled = response.response === 0;
-  applyLoginStartup(enabled);
+  applyLoginStartup(enabled, packageType);
   writePreferences(Object.freeze({ autostartPrompted: true, autostartEnabled: enabled }));
 }
 function showMainWindow(): void { if (mainWindow === undefined || mainWindow.isDestroyed()) { activationPending = true; return; } mainWindow.show(); mainWindow.focus(); }
@@ -117,10 +129,10 @@ function configureSession(logger: RotatingSafeLogger): Electron.Session {
     systemVersion: process.getSystemVersion(),
     ...(process.platform === "linux" ? { sessionType: process.env.XDG_SESSION_TYPE } : {})
   });
+  installPickerProtocol({ sessions: session, rootDirectory: join(app.getAppPath(), "dist", "screen-share") });
   const pickerHost = createLocalPickerHost({
     ipcMain,
     createWindow: (options) => new BrowserWindow(options),
-    documentPath: join(app.getAppPath(), "dist", "screen-share", "picker.html"),
     preloadPath: join(app.getAppPath(), "dist", "screen-share", "picker-preload.cjs")
   });
   const captureSources = async (): Promise<readonly CaptureSourceCandidate<Electron.DesktopCapturerSource>[]> => {
@@ -211,8 +223,8 @@ function createWindow(startUrl: string, logger: RotatingSafeLogger): BrowserWind
   const bounds = new BoundsStore({ read: () => readOptional(boundsPath()), writeAtomic: (contents) => writeAtomic(boundsPath(), contents) });
   const displays = (): Electron.Rectangle[] => screen.getAllDisplays().map((display: Electron.Display) => display.workArea);
   const restored = bounds.load(displays());
-  const window = new BrowserWindow({ title: "CivCom", show: false, icon: join(app.getAppPath(), "assets", "civcom.svg"), ...(restored === undefined ? {} : restored), webPreferences: createWebPreferences() });
-  const offlineUrl = createOfflinePageUrl(join(app.getAppPath(), "dist", "offline.html"));
+  const window = new BrowserWindow({ title: "CivCom", show: false, icon: join(app.getAppPath(), "assets", "civcom.png"), ...(restored === undefined ? {} : restored), webPreferences: createWebPreferences() });
+  const offlineUrl = createOfflinePageUrl("embedded");
   const callbacks = createWindowCallbacks({ startUrl, offlineUrl, load: (url) => { void window.loadURL(url); }, show: showMainWindow, hide: () => window.hide(), log: (event) => logger.write(event) });
   const navigation = createNavigationCallbacks({ offlineUrl, load: (url) => { void window.loadURL(url); }, openExternal: shell.openExternal, log: (event) => logger.write(event) });
   const loadStart = (): void => { void window.loadURL(startUrl); };
@@ -234,25 +246,74 @@ function createWindow(startUrl: string, logger: RotatingSafeLogger): BrowserWind
   loadStart();
   return window;
 }
-function configureUpdater(logger: RotatingSafeLogger): UpdateScheduler {
-  const isDeb = process.platform === "linux" && process.env.APPIMAGE === undefined;
-  autoUpdater.on("error", () => logger.write({ event: "security-event", code: "UNCLASSIFIED" }));
-  autoUpdater.on("update-downloaded", async () => { const response = await dialog.showMessageBox({ type: "info", buttons: ["Uruchom ponownie", "Później"], defaultId: 0, cancelId: 1, title: "CivCom", message: "Aktualizacja jest gotowa. Uruchomić CivCom ponownie?" }); if (response.response === 0) autoUpdater.quitAndInstall(); });
-  return new UpdateScheduler({ isPackaged: app.isPackaged, platform: process.platform, isDeb, check: async () => { await autoUpdater.checkForUpdates(); }, openManual: () => shell.openExternal(APPROVED_DOWNLOAD_PAGE), onError: () => logger.lifecycle("update-error", "ERR"), every: (callback, milliseconds) => setInterval(callback, milliseconds), clearEvery: (handle) => clearInterval(handle as NodeJS.Timeout), unref: (handle) => { (handle as NodeJS.Timeout).unref(); } });
+function createPackagedSmokeWindow(): BrowserWindow {
+  const offlineUrl = createOfflinePageUrl("packaged-smoke");
+  const window = new BrowserWindow({ title: "CivCom", show: false, width: 800, height: 600, webPreferences: createWebPreferences() });
+  const timeout = setTimeout(() => app.exit(1), 20_000);
+  window.webContents.once("did-fail-load", () => { clearTimeout(timeout); app.exit(1); });
+  window.once("ready-to-show", () => {
+    window.show();
+    try {
+      const result = createPackagedSmokeResult({ windowVisible: window.isVisible(), loadedUrl: window.webContents.getURL() });
+      writeAtomic(packagedSmokeResultPath(app.getPath("userData")), `${JSON.stringify(result)}\n`);
+    } catch {
+      clearTimeout(timeout);
+      app.exit(1);
+      return;
+    }
+    clearTimeout(timeout);
+    setTimeout(() => { window.destroy(); app.exit(0); }, 250);
+  });
+  void window.loadURL(offlineUrl);
+  return window;
 }
+function currentPackageType(): PackageType {
+  return detectPackageType({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    resourcesPath: process.resourcesPath,
+    ...(process.env.APPIMAGE === undefined ? {} : { appImagePath: process.env.APPIMAGE }),
+    readMarker: readOptional,
+    inspectAppImage: (path) => resolveRealAppImage(path) === path
+  });
+}
+async function configureUpdater(logger: RotatingSafeLogger, packageType: PackageType): Promise<UpdateController> {
+  return await createUpdateController({
+    packageType,
+    loadUpdater: async () => (await import("electron-updater")).autoUpdater,
+    openManual: async () => {
+      const response = await dialog.showMessageBox({ type: "info", buttons: ["Otwórz stronę wydań", "Anuluj"], defaultId: 1, cancelId: 1, title: "CivCom", message: "Ten pakiet jest aktualizowany ręcznie. Otworzyć najnowsze wydanie CivCom?" });
+      if (response.response === 0) await shell.openExternal(LATEST_RELEASE_PAGE);
+    },
+    confirmRestart: async () => {
+      const response = await dialog.showMessageBox({ type: "info", buttons: ["Uruchom ponownie", "Później"], defaultId: 1, cancelId: 1, title: "CivCom", message: "Aktualizacja jest gotowa. Uruchomić CivCom ponownie?" });
+      return response.response === 0;
+    },
+    onError: () => logger.lifecycle("update-error", "ERR"),
+    every: (callback, milliseconds) => setInterval(callback, milliseconds),
+    clearEvery: (handle) => clearInterval(handle as NodeJS.Timeout),
+    unref: (handle) => { (handle as NodeJS.Timeout).unref(); }
+  });
+}
+if (process.platform === "win32") app.setAppUserModelId("info.soia.civcom.desktop");
 if (!app.requestSingleInstanceLock()) app.quit(); else {
   app.on("second-instance", showMainWindow);
   app.on("activate", showMainWindow);
   app.on("certificate-error", (event, _contents, _url, _error, _certificate, callback) => { event.preventDefault(); callback(false); });
   app.on("before-quit", () => { quitting = true; screenSharing?.shutdown(); updater?.stop(); lifecycleLogger?.lifecycle("stop"); });
   void app.whenReady().then(async () => {
+    if (isPackagedSmokeRequested({ isPackaged: app.isPackaged, argv: process.argv })) {
+      mainWindow = createPackagedSmokeWindow();
+      return;
+    }
     const startUrl = resolvedStartUrl();
     if (startUrl === undefined) { app.quit(); return; }
     const logger = createLogger();
+    const packageType = currentPackageType();
     lifecycleLogger = logger;
     logger.lifecycle("startup"); logger.lifecycle("version", app.getVersion());
-    configureSession(logger); createMenu(); updater = configureUpdater(logger); trayAvailable = createTray(logger); mainWindow = createWindow(startUrl, logger);
-    await promptForAutostart();
+    configureSession(logger); updater = await configureUpdater(logger, packageType); createMenu(); trayAvailable = createTray(logger); mainWindow = createWindow(startUrl, logger);
+    await promptForAutostart(packageType);
     await updater.start();
   });
 }

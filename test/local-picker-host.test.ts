@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createLocalPickerHost, PICKER_IPC_CHANNELS } from "../src/screen-share/local-picker-host.js";
 
-const DOCUMENT_PATH = "/Applications/CivCom/dist/screen-share/picker.html";
-const DOCUMENT_URL = "file:///Applications/CivCom/dist/screen-share/picker.html";
+const DOCUMENT_URL = "civcom-local://picker/index.html";
 const PRELOAD_PATH = "/Applications/CivCom/dist/screen-share/picker-preload.cjs";
 
 function fixture(setupOptions: Readonly<{
@@ -32,7 +31,8 @@ function fixture(setupOptions: Readonly<{
     show: vi.fn(() => {
       if (setupOptions.failDuringShow === true) throw new Error("show failed");
     }),
-    loadFile: vi.fn(() => {
+    loadURL: vi.fn((url: string) => {
+      if (url !== DOCUMENT_URL) throw new Error("wrong local URL");
       if (setupOptions.failDuringLoad === true) throw new Error("load failed");
       return Promise.resolve();
     }),
@@ -46,7 +46,6 @@ function fixture(setupOptions: Readonly<{
       removeHandler: (channel: string) => { ipcHandlers.delete(channel); }
     } as never,
     createWindow: (value) => { options = value; return window as never; },
-    documentPath: DOCUMENT_PATH,
     preloadPath: PRELOAD_PATH
   });
   return {
@@ -144,6 +143,7 @@ describe("local picker host", () => {
     f.host.present({ generation: 1, sources: [{ token: "V".repeat(43), name: "Ekran", kind: "screen" }] }, vi.fn());
     expect(f.options()).toMatchObject({ show: false, title: "Wybierz ekran lub okno — CivCom", webPreferences: { sandbox: true, preload: PRELOAD_PATH } });
     expect(f.contents.setWindowOpenHandler).toHaveBeenCalled();
+    expect(f.window.loadURL).toHaveBeenCalledWith(DOCUMENT_URL);
     const permissionCallback = f.contents.session.setPermissionRequestHandler.mock.calls[0]?.[0] as ((contents: unknown, permission: unknown, callback: (allowed: boolean) => void) => void);
     const permission = vi.fn();
     permissionCallback({}, "media", permission);

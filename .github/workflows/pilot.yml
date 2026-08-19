@@ -1,0 +1,52 @@
+name: Unsigned pilot packages
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: windows
+            package-script: package:win
+          - os: macos-15
+            target: macos
+            package-script: package:mac
+          - os: ubuntu-24.04
+            target: linux
+            package-script: package:linux
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      CIVCOM_BUILD_MODE: pilot
+      CIVCOM_LINUX_MAINTAINER: ${{ vars.CIVCOM_LINUX_MAINTAINER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - run: npm run ${{ matrix.package-script }}
+      - name: Verify packaged application
+        run: npm run package:verify -- --mode pilot --target ${{ matrix.target }}
+      - name: Stage only canonical pilot artifacts
+        run: node scripts/stage-platform-artifacts.mjs ${{ matrix.target }}
+      - name: Store unsigned pilot only as a workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: UNSIGNED-PILOT-${{ matrix.target }}
+          path: release/staged/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14

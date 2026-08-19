@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { URL } from "node:url";
-import { isSafeSvgContent } from "../scripts/verify-assets.mjs";
+import { isSafeSvgContent, verifyAssetDirectory } from "../scripts/verify-assets.mjs";
 import { describe, expect, test } from "vitest";
 
 describe("isSafeSvgContent", () => {
@@ -100,5 +102,15 @@ describe("isSafeSvgContent", () => {
     const asset = await readFile(new URL("../assets/civcom.svg", import.meta.url), "utf8");
 
     expect(isSafeSvgContent(asset)).toBe(true);
+  });
+
+  test("requires the canonical 1024x1024 application raster as well as both tray rasters", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "civcom-assets-"));
+    for (const filename of ["civcom.svg", "civcom-tray.png", "civcom-tray@2x.png"]) {
+      await copyFile(new URL(`../assets/${filename}`, import.meta.url), join(directory, filename));
+    }
+    await expect(verifyAssetDirectory(directory)).rejects.toThrow("civcom.png");
+    await expect(readFile(new URL("../assets/civcom.png", import.meta.url))).resolves.toBeInstanceOf(Buffer);
+    await expect(verifyAssetDirectory()).resolves.toBeUndefined();
   });
 });

@@ -33,9 +33,18 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "verify:electron": "electron --version && node scripts/verify-electron-binary.mjs"
+    "verify": "npm run lint && npm run typecheck && npm test && npm run build && npm run verify:electron && node scripts/verify-workflows.mjs",
+    "verify:electron": "electron --version && node scripts/verify-electron-binary.mjs",
+    "package:win": "node scripts/run-builder.mjs windows",
+    "package:mac": "node scripts/run-builder.mjs macos",
+    "package:linux": "node scripts/run-builder.mjs linux",
+    "package:verify": "node scripts/verify-packaged-app.mjs",
+    "release:verify": "node scripts/release-artifacts.mjs verify release/assembled",
+    "release:sha256": "node scripts/release-artifacts.mjs sha256 release/assembled",
+    "release:sbom": "node scripts/release-artifacts.mjs sbom release/assembled"
   },
   "devDependencies": {
+    "@electron/fuses": "2.1.3",
     "@eslint/js": "10.0.1",
     "@types/node": "24.13.3",
     "electron": "43.4.1",

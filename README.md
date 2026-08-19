@@ -12,9 +12,31 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm run verify
 ```
 
-The foundation pins Electron `43.4.1`, electron-builder `26.15.3`, and electron-updater `6.8.9`. Packaging and Electron lifecycle behavior are intentionally deferred to later tasks.
+The project pins Electron `43.4.1`, electron-builder `26.15.3`, electron-updater `6.8.9`, and `@electron/fuses` `2.1.3`.
+
+## Packaging and verification
+
+The native package commands are `npm run package:win`, `npm run package:mac`, and `npm run package:linux`. Set exactly one build mode before invoking one on its native operating system. For example, a local macOS pilot and its packaged verification are:
+
+```sh
+CIVCOM_BUILD_MODE=pilot npm run package:mac
+npm run package:verify -- --mode pilot --target macos
+```
+
+Every package command invokes electron-builder with `--publish never`. The local `release/` directory is ignored. An unsigned pilot may be retained only as a local ignored output or a short-lived `UNSIGNED-PILOT-*` workflow artifact. Never turn an unsigned pilot into a public GitHub Release.
+
+The protected production workflow builds all three targets from a protected version tag whose commit is reachable from `origin/main`. Production Windows and macOS artifacts are signed, and macOS is notarized; the workflow verifies those identities, signatures, hardened runtime, universal helpers, notarization ticket, checksums, SBOM, and attestations before a draft-first release can be published. It requires externally managed values rather than checked-in identities:
+
+- Windows: `CIVCOM_WINDOWS_PUBLISHER_DN`, `CSC_LINK`, and `CSC_KEY_PASSWORD`.
+- macOS: `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER`.
+- Linux DEB ownership: `CIVCOM_LINUX_MAINTAINER`.
+
+Missing production or package ownership inputs fail the relevant job. The values belong in the protected GitHub environment as repository variables or secrets; this README intentionally supplies no certificate, Apple team, key, or maintainer value.
+
+Windows, macOS, and AppImage packages use the validated update feed. A DEB always uses a manual update link and never initializes the in-app updater; install DEB updates through the administrator-approved package process.
 
 ## Asset provenance
 

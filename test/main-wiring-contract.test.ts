@@ -10,6 +10,8 @@ describe("Electron main-process integration contract", () => {
     expect(main).toContain('app.on("second-instance", showMainWindow)');
     expect(main).toContain("webPreferences: createWebPreferences()");
     expect(main).not.toContain("setUserAgent(");
+    expect(main).not.toContain('import electronUpdater from "electron-updater"');
+    expect(main).not.toContain("loadFile(");
   });
 
   it("denies certificate errors, funnels links through policy, and installs the display handler on the CivCom session", () => {
@@ -32,5 +34,21 @@ describe("Electron main-process integration contract", () => {
     expect(main).toContain("did-fail-load");
     expect(main).toContain("did-navigate-in-page");
     expect(main).toContain("offlineUrl");
+  });
+
+  it("supports a packaged-only native offline smoke without configuring the remote session or updater", () => {
+    expect(main).toContain("isPackagedSmokeRequested");
+    expect(main).toContain("createPackagedSmokeWindow");
+    expect(main).toContain("packagedSmokeResultPath");
+    expect(main).toContain("createPackagedSmokeResult");
+  });
+
+  it("sets the Windows notification identity before readiness and keeps AppImage autostart on the verified package path", () => {
+    const appIdCall = main.indexOf('app.setAppUserModelId("info.soia.civcom.desktop")');
+    expect(appIdCall).toBeGreaterThanOrEqual(0);
+    expect(appIdCall).toBeLessThan(main.indexOf("app.whenReady()"));
+    expect(main).toContain('process.platform === "win32"');
+    expect(main).toContain("resolveLinuxAutostartExecutable");
+    expect(main).toContain("packageType");
   });
 });

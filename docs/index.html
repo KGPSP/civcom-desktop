@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; manifest-src 'none'; frame-ancestors 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>Pobierz CivCom</title>
+    <link rel="stylesheet" href="downloads.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div><p class="eyebrow">CivCom Desktop</p><h1>Pobierz bezpieczny klient CivCom</h1></div>
+      </header>
+      <p class="lead">Wybierz instalator dla swojego systemu. Pobieranie rozpocznie się dopiero po kliknięciu.</p>
+      <p><a id="primary-download" class="primary" href="https://github.com/KGPSP/civcom-desktop/releases/latest">Zobacz najnowsze wydanie</a></p>
+
+      <section aria-labelledby="alternatives">
+        <h2 id="alternatives">Alternatywne pliki do pobrania</h2>
+        <div class="downloads">
+          <article><h3>Windows 10/11</h3><a data-asset="CivCom-Windows-x64.exe" href="https://github.com/KGPSP/civcom-desktop/releases/latest">CivCom-Windows-x64.exe</a></article>
+          <article><h3>macOS 13 lub nowszy</h3><a data-asset="CivCom-macOS-universal.dmg" href="https://github.com/KGPSP/civcom-desktop/releases/latest">CivCom-macOS-universal.dmg</a><a data-asset="CivCom-macOS-universal.zip" href="https://github.com/KGPSP/civcom-desktop/releases/latest">CivCom-macOS-universal.zip</a></article>
+          <article><h3>Linux x86_64</h3><a class="recommended" data-asset="CivCom-Linux-x86_64.deb" href="https://github.com/KGPSP/civcom-desktop/releases/latest">CivCom-Linux-x86_64.deb — zalecany</a><a data-asset="CivCom-Linux-x86_64.AppImage" href="https://github.com/KGPSP/civcom-desktop/releases/latest">CivCom-Linux-x86_64.AppImage — przenośny</a></article>
+        </div>
+      </section>
+
+      <section aria-labelledby="verification">
+        <h2 id="verification">Weryfikacja wydania</h2>
+        <p>Przed instalacją możesz sprawdzić sumę pliku i zakres komponentów użytych do budowy.</p>
+        <ul>
+          <li><a data-asset="SHA256SUMS" href="https://github.com/KGPSP/civcom-desktop/releases/latest">SHA256SUMS</a></li>
+          <li><a data-asset="CivCom-build.spdx.json" href="https://github.com/KGPSP/civcom-desktop/releases/latest">CivCom-build.spdx.json — SPDX dla zależności npm i łańcucha budowy</a></li>
+          <li><a href="https://github.com/KGPSP/civcom-desktop/releases/latest">Najnowsze wydanie i informacje o zmianach</a></li>
+        </ul>
+      </section>
+    </main>
+    <script src="downloads.js"></script>
+  </body>
+</html>
