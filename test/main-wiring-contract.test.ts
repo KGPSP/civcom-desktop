@@ -49,6 +49,9 @@ describe("Electron main-process integration contract", () => {
     expect(appIdCall).toBeLessThan(main.indexOf("app.whenReady()"));
     expect(main).toContain('process.platform === "win32"');
     expect(main).toContain("resolveLinuxAutostartExecutable");
+    expect(main).toContain("resolveVerifiedAppImageRuntime");
+    expect(main).toContain("process.env.APPDIR");
+    expect(main).toContain("process.resourcesPath");
     expect(main).toContain("packageType");
   });
 });

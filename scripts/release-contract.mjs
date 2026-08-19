@@ -20,12 +20,12 @@ const ASSET_NAMES = Object.freeze({
   checksums: "SHA256SUMS"
 });
 const ASSET_KEYS = Object.freeze(Object.keys(ASSET_NAMES));
-const REQUIRED_SBOM_PACKAGES = Object.freeze({
-  "civcom-desktop": "0.1.0",
+const PINNED_BUILD_PACKAGES = Object.freeze({
   electron: "43.4.1",
   "electron-updater": "6.8.9",
   "@electron/fuses": "2.1.3"
 });
+const PACKAGE_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
 function plainRecord(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an object");
@@ -107,13 +107,32 @@ export function parseUpdateMetadata(text, expectedFilenames, expectedVersion) {
   return Object.freeze({ version, files: Object.freeze(files), url: files[0]?.url, size: files[0]?.size, path, sha512: topSha, releaseDate });
 }
 
-export function validateBuildSbom(value) {
+export function resolveExpectedAppVersion(packageMetadataValue, packageLockValue) {
+  const packageMetadata = plainRecord(packageMetadataValue);
+  const packageLock = plainRecord(packageLockValue);
+  const lockPackages = plainRecord(packageLock.packages);
+  const lockRoot = plainRecord(lockPackages[""]);
+  const version = packageMetadata.version;
+  if (packageMetadata.name !== "civcom-desktop"
+    || typeof version !== "string"
+    || !PACKAGE_VERSION_PATTERN.test(version)
+    || packageLock.lockfileVersion !== 3
+    || packageLock.name !== "civcom-desktop"
+    || packageLock.version !== version
+    || lockRoot.name !== "civcom-desktop"
+    || lockRoot.version !== version) throw new Error("Package metadata and lock version differ");
+  return version;
+}
+
+export function validateBuildSbom(value, expectedAppVersion) {
+  if (typeof expectedAppVersion !== "string" || !PACKAGE_VERSION_PATTERN.test(expectedAppVersion)) throw new Error("Invalid expected application version");
   const record = plainRecord(value);
   if (record.spdxVersion !== "SPDX-2.3" || record.dataLicense !== "CC0-1.0" || record.name !== "CivCom npm lockfile and build supply chain" || /full binary inventory/i.test(JSON.stringify(record))) throw new Error("Invalid build supply-chain SBOM identity");
   if (!Array.isArray(record.packages) || record.packages.length === 0 || record.packages.some((entry) => {
     try { const item = plainRecord(entry); return typeof item.name !== "string" || item.name === ""; } catch { return true; }
   })) throw new Error("Empty or invalid build supply-chain SBOM");
-  for (const [required, version] of Object.entries(REQUIRED_SBOM_PACKAGES)) {
+  const requiredPackages = { "civcom-desktop": expectedAppVersion, ...PINNED_BUILD_PACKAGES };
+  for (const [required, version] of Object.entries(requiredPackages)) {
     if (!record.packages.some((entry) => entry.name === required && entry.versionInfo === version)) throw new Error(`Build supply-chain SBOM omits required package version: ${required}@${version}`);
   }
 }
@@ -168,16 +187,15 @@ async function verifyChecksums(directory, contract) {
 
 export async function verifyReleaseDirectory(directory, contractValue, options = {}) {
   const contract = loadReleaseContract(contractValue);
+  if (typeof options.expectedVersion !== "string" || !PACKAGE_VERSION_PATTERN.test(options.expectedVersion)) throw new Error("Release verification requires an expected application version");
   const entries = await readdir(directory, { withFileTypes: true });
   const names = entries.map((entry) => entry.name).sort();
   const expectedNames = [...contract.orderedAssets].sort();
   if (names.length !== expectedNames.length || names.some((name, index) => name !== expectedNames[index])) throw new Error("Missing or unexpected release directory entry");
   for (const filename of contract.orderedAssets) await regularFile(directory, filename);
-  if (typeof options.expectedVersion === "string") {
-    for (const [metadataName, payloadNames] of [[contract.assets.windowsMetadata, [contract.assets.windowsInstaller]], [contract.assets.macMetadata, [contract.assets.macZip]], [contract.assets.linuxMetadata, [contract.assets.linuxAppImage, contract.assets.linuxDeb]]]) {
-      await verifyUpdateMetadataFiles(directory, await readFile(join(directory, metadataName), "utf8"), payloadNames, options.expectedVersion);
-    }
+  for (const [metadataName, payloadNames] of [[contract.assets.windowsMetadata, [contract.assets.windowsInstaller]], [contract.assets.macMetadata, [contract.assets.macZip]], [contract.assets.linuxMetadata, [contract.assets.linuxAppImage, contract.assets.linuxDeb]]]) {
+    await verifyUpdateMetadataFiles(directory, await readFile(join(directory, metadataName), "utf8"), payloadNames, options.expectedVersion);
   }
-  validateBuildSbom(JSON.parse(await readFile(join(directory, contract.assets.buildSbom), "utf8")));
+  validateBuildSbom(JSON.parse(await readFile(join(directory, contract.assets.buildSbom), "utf8")), options.expectedVersion);
   await verifyChecksums(directory, contract);
 }

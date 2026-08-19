@@ -12,7 +12,8 @@ type ReleaseContractModule = Readonly<{
   parseUpdateMetadata(text: string, expectedFilenames: string | readonly string[], expectedVersion: string): Readonly<Record<string, unknown>>;
   createSha256Manifest(directory: string, filenames: readonly string[]): Promise<string>;
   verifyIdenticalReleaseDirectories(localDirectory: string, remoteDirectory: string, contract: unknown): Promise<void>;
-  validateBuildSbom(value: unknown): void;
+  resolveExpectedAppVersion(packageMetadata: unknown, packageLock: unknown): string;
+  validateBuildSbom(value: unknown, expectedAppVersion: string): void;
 }>;
 
 async function loadModule(): Promise<ReleaseContractModule> {
@@ -183,14 +184,33 @@ describe("canonical release contract", () => {
 
   it("labels the SPDX document as npm lockfile and build supply-chain scope", async () => {
     const { validateBuildSbom } = await loadModule();
-    expect(() => validateBuildSbom({ spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0", name: "CivCom npm lockfile and build supply chain", packages: requiredSbomPackages })).not.toThrow();
+    const sbom = { spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0", name: "CivCom npm lockfile and build supply chain", packages: requiredSbomPackages };
+    expect(() => validateBuildSbom(sbom, "0.1.0")).not.toThrow();
     for (const missingName of ["electron", "electron-updater", "@electron/fuses"]) {
-      expect(() => validateBuildSbom({ spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0", name: "CivCom npm lockfile and build supply chain", packages: requiredSbomPackages.filter(({ name }) => name !== missingName) })).toThrow();
+      expect(() => validateBuildSbom({ ...sbom, packages: requiredSbomPackages.filter(({ name }) => name !== missingName) }, "0.1.0")).toThrow();
     }
     for (const [name, versionInfo] of [["civcom-desktop", "9.9.9"], ["electron", "42.0.0"], ["electron-updater", "6.8.8"], ["@electron/fuses", "2.1.2"]]) {
       const packages = requiredSbomPackages.map((entry) => entry.name === name ? { ...entry, versionInfo } : entry);
-      expect(() => validateBuildSbom({ spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0", name: "CivCom npm lockfile and build supply chain", packages })).toThrow();
+      expect(() => validateBuildSbom({ ...sbom, packages }, "0.1.0")).toThrow();
     }
-    for (const value of [null, {}, { spdxVersion: "SPDX-2.2", dataLicense: "CC0-1.0", name: "full binary inventory", packages: [] }, { spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0", name: "CivCom npm lockfile and build supply chain", packages: [] }]) expect(() => validateBuildSbom(value)).toThrow();
+    for (const value of [null, {}, { spdxVersion: "SPDX-2.2", dataLicense: "CC0-1.0", name: "full binary inventory", packages: [] }, { spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0", name: "CivCom npm lockfile and build supply chain", packages: [] }]) expect(() => validateBuildSbom(value, "0.1.0")).toThrow();
+    expect(() => validateBuildSbom(sbom, "")).toThrow();
+  });
+
+  it("takes the app SBOM version from matching package metadata and lock data instead of a hardcoded release", async () => {
+    const { resolveExpectedAppVersion, validateBuildSbom } = await loadModule();
+    const bumpedPackages = requiredSbomPackages.map((entry) => entry.name === "civcom-desktop" ? { ...entry, versionInfo: "0.2.0" } : entry);
+    const bumpedSbom = { spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0", name: "CivCom npm lockfile and build supply chain", packages: bumpedPackages };
+    expect(resolveExpectedAppVersion(
+      { name: "civcom-desktop", version: "0.2.0" },
+      { name: "civcom-desktop", lockfileVersion: 3, version: "0.2.0", packages: { "": { name: "civcom-desktop", version: "0.2.0" } } }
+    )).toBe("0.2.0");
+    expect(() => validateBuildSbom(bumpedSbom, "0.2.0")).not.toThrow();
+    expect(() => validateBuildSbom(bumpedSbom, "0.1.0")).toThrow();
+    for (const packageLock of [
+      { name: "civcom-desktop", lockfileVersion: 3, version: "0.1.0", packages: { "": { name: "civcom-desktop", version: "0.1.0" } } },
+      { name: "civcom-desktop", lockfileVersion: 2, version: "0.2.0", packages: { "": { name: "civcom-desktop", version: "0.2.0" } } },
+      { name: "civcom-desktop", lockfileVersion: 3, version: "0.2.0", packages: { "": { name: "wrong-name", version: "0.2.0" } } }
+    ]) expect(() => resolveExpectedAppVersion({ name: "civcom-desktop", version: "0.2.0" }, packageLock)).toThrow();
   });
 });

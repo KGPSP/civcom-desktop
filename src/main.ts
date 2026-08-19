@@ -1,9 +1,10 @@
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, protocol, screen, session, shell, Tray, webContents, type MenuItemConstructorOptions } from "electron";
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, win32 } from "node:path";
 import { BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, escapeDesktopExecPath, isHiddenStart, makeLoginItemSettings, reserveDownloadDestination, resolveLinuxAutostartExecutable } from "./desktop/shell.js";
-import { createUpdateController, detectPackageType, LATEST_RELEASE_PAGE, type PackageType, type UpdateController } from "./desktop/updater.js";
+import { createUpdateController, detectPackageType, loadVerifiedUpdater, LATEST_RELEASE_PAGE, type PackageType, type UpdateController } from "./desktop/updater.js";
+import { resolveVerifiedAppImageRuntime } from "./desktop/appimage-runtime.js";
 import { createPackagedSmokeResult, isPackagedSmokeRequested, packagedSmokeResultPath } from "./desktop/packaged-smoke.js";
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
 import { resolveStartUrl } from "./security/url-policy.js";
@@ -63,20 +64,20 @@ function readPreferences(): Preferences | undefined {
   } catch { return undefined; }
 }
 function writePreferences(preferences: Preferences): void { writeAtomic(preferencesPath(), JSON.stringify(preferences)); }
-function resolveRealAppImage(path: string): string | undefined {
-  try {
-    const metadata = lstatSync(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) return undefined;
-    const resolved = realpathSync(path);
-    return resolved === path ? resolved : undefined;
-  } catch { return undefined; }
+function resolveRuntimeAppImage(path: string): string | undefined {
+  return resolveVerifiedAppImageRuntime({
+    appImagePath: path,
+    appDir: process.env.APPDIR,
+    executablePath: process.execPath,
+    resourcesPath: process.resourcesPath
+  });
 }
 function applyLoginStartup(enabled: boolean, packageType: PackageType): void {
   if (process.platform === "linux") {
     const xdgConfig = process.env.XDG_CONFIG_HOME;
     const path = join(xdgConfig !== undefined && xdgConfig.startsWith("/") ? xdgConfig : join(app.getPath("home"), ".config"), "autostart", "civcom.desktop");
     if (!enabled) { try { rmSync(path); } catch { /* already disabled */ } return; }
-    const selected = resolveLinuxAutostartExecutable({ packageType, executable: process.execPath, ...(process.env.APPIMAGE === undefined ? {} : { appImagePath: process.env.APPIMAGE }), resolveAppImage: resolveRealAppImage });
+    const selected = resolveLinuxAutostartExecutable({ packageType, executable: process.execPath, ...(process.env.APPIMAGE === undefined ? {} : { appImagePath: process.env.APPIMAGE }), resolveAppImage: resolveRuntimeAppImage });
     const executable = escapeDesktopExecPath(selected);
     if (executable === undefined) return;
     writeAtomic(path, `[Desktop Entry]\nType=Application\nName=CivCom\nExec="${executable}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
@@ -274,13 +275,13 @@ function currentPackageType(): PackageType {
     resourcesPath: process.resourcesPath,
     ...(process.env.APPIMAGE === undefined ? {} : { appImagePath: process.env.APPIMAGE }),
     readMarker: readOptional,
-    inspectAppImage: (path) => resolveRealAppImage(path) === path
+    inspectAppImage: (path) => resolveRuntimeAppImage(path) === path
   });
 }
 async function configureUpdater(logger: RotatingSafeLogger, packageType: PackageType): Promise<UpdateController> {
   return await createUpdateController({
     packageType,
-    loadUpdater: async () => (await import("electron-updater")).autoUpdater,
+    loadUpdater: loadVerifiedUpdater,
     openManual: async () => {
       const response = await dialog.showMessageBox({ type: "info", buttons: ["Otwórz stronę wydań", "Anuluj"], defaultId: 1, cancelId: 1, title: "CivCom", message: "Ten pakiet jest aktualizowany ręcznie. Otworzyć najnowsze wydanie CivCom?" });
       if (response.response === 0) await shell.openExternal(LATEST_RELEASE_PAGE);

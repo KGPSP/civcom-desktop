@@ -3,12 +3,14 @@ import { spawnSync } from "node:child_process";
 import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSha256Manifest, loadReleaseContract, validateBuildSbom, verifyReleaseDirectory } from "./release-contract.mjs";
+import { createSha256Manifest, loadReleaseContract, resolveExpectedAppVersion, validateBuildSbom, verifyReleaseDirectory } from "./release-contract.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const downloads = JSON.parse(await readFile(join(projectRoot, "docs", "downloads.json"), "utf8"));
 const contract = loadReleaseContract(downloads);
 const packageMetadata = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
+const packageLock = JSON.parse(await readFile(join(projectRoot, "package-lock.json"), "utf8"));
+const expectedAppVersion = resolveExpectedAppVersion(packageMetadata, packageLock);
 
 async function writeNewFile(path, contents) {
   try { await lstat(path); throw new Error(`Refusing to replace an existing release output: ${path}`); } catch (error) {
@@ -44,12 +46,12 @@ export async function generateBuildSbom(directory, environment = process.env) {
   if (result.error !== undefined || result.status !== 0 || typeof result.stdout !== "string") throw new Error("npm SPDX generation failed");
   const sbom = JSON.parse(result.stdout);
   sbom.name = "CivCom npm lockfile and build supply chain";
-  validateBuildSbom(sbom);
+  validateBuildSbom(sbom, expectedAppVersion);
   await writeNewFile(join(directory, contract.assets.buildSbom), `${JSON.stringify(sbom, null, 2)}\n`);
 }
 
 export async function verifyRelease(directory) {
-  await verifyReleaseDirectory(directory, downloads, { expectedVersion: packageMetadata.version });
+  await verifyReleaseDirectory(directory, downloads, { expectedVersion: expectedAppVersion });
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

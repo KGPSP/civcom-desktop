@@ -12,6 +12,7 @@ type UpdaterModule = Readonly<{
     readMarker(path: string): string | undefined;
     inspectAppImage(path: string): boolean;
   }>): string;
+  loadVerifiedUpdater?: (packageType: string, importer: (specifier: string) => Promise<Record<string, unknown>> | Record<string, unknown>) => Promise<unknown>;
   createUpdateController(input: Readonly<Record<string, unknown>>): Promise<Readonly<{ enabled: boolean; start(): Promise<void>; manual(): Promise<void>; stop(): void }>>;
 }>;
 
@@ -27,9 +28,10 @@ function timers() {
   };
 }
 
-function fakeUpdater() {
+function fakeUpdater(policyWrites: string[] = []) {
   const listeners = new Map<string, (...args: any[]) => unknown>();
   const target: Record<string, any> = {
+    logger: console,
     autoDownload: false,
     autoInstallOnAppQuit: true,
     allowPrerelease: true,
@@ -43,12 +45,49 @@ function fakeUpdater() {
   return new Proxy(target, {
     set(object, property, value) {
       if (property === "channel") throw new Error("channel-must-not-be-set");
+      if (["logger", "autoDownload", "autoInstallOnAppQuit", "allowPrerelease", "allowDowngrade", "disableWebInstaller"].includes(String(property))) policyWrites.push(String(property));
       return Reflect.set(object, property, value);
     }
   });
 }
 
 describe("packaged update policy", () => {
+  it("instantiates AppImageUpdater for a verified AppImage runtime even though the packaged marker is deb", async () => {
+    const { detectPackageType, loadVerifiedUpdater } = await loadModule();
+    expect(loadVerifiedUpdater).toBeTypeOf("function");
+    if (typeof loadVerifiedUpdater !== "function") return;
+    const constructed: string[] = [];
+    class AppImageUpdater { public constructor() { constructed.push("appimage"); } }
+    const packageType = detectPackageType({
+      isPackaged: true,
+      platform: "linux",
+      resourcesPath: "/tmp/.mount_CivCom/resources",
+      appImagePath: "/home/user/CivCom.AppImage",
+      readMarker: () => "deb\n",
+      inspectAppImage: () => true
+    });
+    const importer = vi.fn(async (specifier: string) => {
+      if (/DebUpdater|dpkg|apt/i.test(specifier)) throw new Error("Deb updater implementation must never be imported");
+      if (specifier !== "electron-updater/out/AppImageUpdater.js") throw new Error(`unexpected updater import: ${specifier}`);
+      return { AppImageUpdater };
+    });
+    const updater = await loadVerifiedUpdater(packageType, importer);
+    expect(updater).toBeInstanceOf(AppImageUpdater);
+    expect(constructed).toEqual(["appimage"]);
+    expect(importer).toHaveBeenCalledExactlyOnceWith("electron-updater/out/AppImageUpdater.js");
+  });
+
+  it("does not import any updater implementation for deb, unknown, or development packages", async () => {
+    const { loadVerifiedUpdater } = await loadModule();
+    expect(loadVerifiedUpdater).toBeTypeOf("function");
+    if (typeof loadVerifiedUpdater !== "function") return;
+    for (const packageType of ["deb", "unknown", "development"]) {
+      const importer = vi.fn((_specifier: string) => { throw new Error("updater module must not be imported"); });
+      await expect(loadVerifiedUpdater(packageType, importer)).rejects.toThrow();
+      expect(importer).not.toHaveBeenCalled();
+    }
+  });
+
   it("detects exact resources/package-type markers and only a validated AppImage path fallback", async () => {
     const { detectPackageType } = await loadModule();
     const detect = (platform: string, marker: string | undefined, appImagePath?: string, valid = true) => detectPackageType({
@@ -88,16 +127,20 @@ describe("packaged update policy", () => {
 
   it("sets safe updater flags, checks at startup and six-hour intervals, and prevents overlap", async () => {
     const { createUpdateController } = await loadModule();
-    const updater = fakeUpdater();
+    const policyWrites: string[] = [];
+    const updater = fakeUpdater(policyWrites);
     let resolveCheck: (() => void) | undefined;
     updater.checkForUpdates = vi.fn(() => new Promise<void>((resolve) => { resolveCheck = resolve; }));
     const clock = timers();
     const controller = await createUpdateController({ packageType: "macos", loadUpdater: vi.fn().mockResolvedValue(updater), openManual: vi.fn(), onError: vi.fn(), confirmRestart: vi.fn(), ...clock });
+    expect(policyWrites).toEqual(["logger", "autoDownload", "autoInstallOnAppQuit", "allowPrerelease", "allowDowngrade", "disableWebInstaller"]);
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
     expect(updater.autoDownload).toBe(true);
     expect(updater.autoInstallOnAppQuit).toBe(false);
     expect(updater.allowPrerelease).toBe(false);
     expect(updater.allowDowngrade).toBe(false);
     expect(updater.disableWebInstaller).toBe(true);
+    expect(updater.logger).toBeNull();
     expect("channel" in updater).toBe(false);
     const starting = controller.start();
     await Promise.resolve();

@@ -4,13 +4,15 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createPublicationPlan } from "./release-automation.mjs";
-import { loadReleaseContract, verifyIdenticalReleaseDirectories, verifyReleaseDirectory } from "./release-contract.mjs";
+import { loadReleaseContract, resolveExpectedAppVersion, verifyIdenticalReleaseDirectories, verifyReleaseDirectory } from "./release-contract.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixedReleaseDirectory = join(projectRoot, "release", "assembled");
 const downloads = JSON.parse(await readFile(join(projectRoot, "docs", "downloads.json"), "utf8"));
 const contract = loadReleaseContract(downloads);
 const packageMetadata = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
+const packageLock = JSON.parse(await readFile(join(projectRoot, "package-lock.json"), "utf8"));
+const expectedAppVersion = resolveExpectedAppVersion(packageMetadata, packageLock);
 
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: projectRoot, env: process.env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, shell: false });
@@ -28,7 +30,7 @@ function context() {
     refName: process.env.GITHUB_REF_NAME,
     refProtected: process.env.GITHUB_REF_PROTECTED,
     repository: process.env.GITHUB_REPOSITORY,
-    packageVersion: packageMetadata.version,
+    packageVersion: expectedAppVersion,
     releaseDirectory: fixedReleaseDirectory,
     assetNames: contract.orderedAssets
   });
@@ -48,7 +50,7 @@ async function verifyRemoteDraft(planContext) {
   const downloaded = await mkdtemp(join(tmpdir(), "civcom-release-verification-"));
   try {
     run("gh", ["release", "download", planContext.refName, "--repo", planContext.repository, "--dir", downloaded]);
-    await verifyReleaseDirectory(downloaded, downloads, { expectedVersion: packageMetadata.version });
+    await verifyReleaseDirectory(downloaded, downloads, { expectedVersion: expectedAppVersion });
     await verifyIdenticalReleaseDirectories(fixedReleaseDirectory, downloaded, downloads);
   } finally {
     await rm(downloaded, { recursive: true, force: true });
@@ -58,7 +60,7 @@ async function verifyRemoteDraft(planContext) {
 export async function runPublication(mode, requestedDirectory) {
   const releaseDirectory = resolve(projectRoot, requestedDirectory);
   if (releaseDirectory !== fixedReleaseDirectory) throw new Error("Publication accepts only the fixed assembled release directory");
-  await verifyReleaseDirectory(releaseDirectory, downloads, { expectedVersion: packageMetadata.version });
+  await verifyReleaseDirectory(releaseDirectory, downloads, { expectedVersion: expectedAppVersion });
   const planContext = context();
   const plan = createPublicationPlan(mode, planContext);
   if (mode === "draft") {

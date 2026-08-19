@@ -13,6 +13,7 @@ export type UpdateController = Readonly<{
 }>;
 
 type AutoUpdater = {
+  logger: unknown | null;
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   allowPrerelease: boolean;
@@ -22,6 +23,35 @@ type AutoUpdater = {
   quitAndInstall(): void;
   on(event: "error" | "update-downloaded", listener: () => unknown): unknown;
 };
+
+type UpdaterConstructor = new () => AutoUpdater;
+type UpdaterModule = Readonly<Record<string, unknown>>;
+type UpdaterImport = Readonly<{ specifier: string; exportName: string }>;
+
+const UPDATER_IMPORTS = Object.freeze({
+  windows: Object.freeze({ specifier: "electron-updater/out/NsisUpdater.js", exportName: "NsisUpdater" }),
+  macos: Object.freeze({ specifier: "electron-updater/out/MacUpdater.js", exportName: "MacUpdater" }),
+  appimage: Object.freeze({ specifier: "electron-updater/out/AppImageUpdater.js", exportName: "AppImageUpdater" })
+} satisfies Record<"windows" | "macos" | "appimage", UpdaterImport>);
+
+async function importUpdaterModule(specifier: string): Promise<UpdaterModule> {
+  if (specifier === UPDATER_IMPORTS.windows.specifier) return await import("electron-updater/out/NsisUpdater.js");
+  if (specifier === UPDATER_IMPORTS.macos.specifier) return await import("electron-updater/out/MacUpdater.js");
+  if (specifier === UPDATER_IMPORTS.appimage.specifier) return await import("electron-updater/out/AppImageUpdater.js");
+  throw new Error("updater-import-not-allowed");
+}
+
+export async function loadVerifiedUpdater(
+  packageType: PackageType,
+  importer: (specifier: string) => Promise<UpdaterModule> | UpdaterModule = importUpdaterModule
+): Promise<AutoUpdater> {
+  if (packageType !== "windows" && packageType !== "macos" && packageType !== "appimage") throw new Error("updater-disabled-for-package-type");
+  const selected = UPDATER_IMPORTS[packageType];
+  const module = await importer(selected.specifier);
+  const Updater = module[selected.exportName];
+  if (typeof Updater !== "function") throw new Error("updater-class-unavailable");
+  return new (Updater as UpdaterConstructor)();
+}
 
 function safeNotify(callback: (() => void) | undefined): void {
   try { callback?.(); } catch { /* a reporter cannot weaken the policy */ }
@@ -78,7 +108,7 @@ function manualInput(input: Readonly<{ openManual?: () => void | Promise<void>; 
 
 export async function createUpdateController(input: Readonly<{
   packageType: PackageType;
-  loadUpdater(): Promise<AutoUpdater> | AutoUpdater;
+  loadUpdater(packageType: "windows" | "macos" | "appimage"): Promise<AutoUpdater> | AutoUpdater;
   openManual?: () => void | Promise<void>;
   onError?: () => void;
   confirmRestart?: () => boolean | Promise<boolean>;
@@ -92,7 +122,8 @@ export async function createUpdateController(input: Readonly<{
 
   let autoUpdater: AutoUpdater;
   try {
-    autoUpdater = await input.loadUpdater();
+    autoUpdater = await input.loadUpdater(input.packageType);
+    autoUpdater.logger = null;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowPrerelease = false;
