@@ -15,6 +15,9 @@ describe("Electron main-process integration contract", () => {
   });
 
   it("denies certificate errors, funnels links through policy, and installs the display handler on the CivCom session", () => {
+    const clientCertificateGuard = main.indexOf("installClientCertificateDenyHandler(app)");
+    expect(clientCertificateGuard).toBeGreaterThanOrEqual(0);
+    expect(clientCertificateGuard).toBeLessThan(main.indexOf("app.whenReady()"));
     expect(main).toContain('app.on("certificate-error"');
     expect(main).toContain("callback(false)");
     expect(main).toContain("setWindowOpenHandler");

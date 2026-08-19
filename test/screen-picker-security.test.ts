@@ -47,6 +47,9 @@ describe("local picker isolation", () => {
     expect(csp).toContain("connect-src 'none'");
     expect(html).not.toMatch(/<script(?![^>]+src=)/);
     expect(html).not.toMatch(/\son[a-z]+=/i);
+    expect(html).toContain('id="system-audio-option"');
+    expect(html).toContain('id="system-audio" type="checkbox"');
+    expect(html).toContain("Dołącz dźwięk systemowy");
   });
 
   it("keeps source actions retryable after a rejected picker IPC decision", () => {
@@ -115,16 +118,41 @@ describe("picker IPC boundary", () => {
       cancel: vi.fn().mockResolvedValue(true)
     };
     const api = createPickerPreloadApi(bridge);
-    expect(Object.keys(api).sort()).toEqual(["cancel", "choose", "getSources"]);
+    expect(Object.keys(api).sort()).toEqual(["cancel", "choose", "getSources", "systemAudioAvailable"]);
     expect(Object.isFrozen(api)).toBe(true);
     expect("invoke" in api).toBe(false);
     expect("send" in api).toBe(false);
     expect("electron" in api).toBe(false);
     await expect(api.getSources()).resolves.toEqual([{ token: "Q".repeat(43), name: "Monitor", kind: "screen", thumbnailDataUrl: "data:image/png;base64,AA==" }]);
     await api.choose("Q".repeat(43));
-    expect(bridge.choose).toHaveBeenCalledWith({ generation: 12, token: "Q".repeat(43) });
+    expect(bridge.choose).toHaveBeenCalledWith({ generation: 12, token: "Q".repeat(43), includeSystemAudio: false });
     await api.cancel();
     expect(bridge.cancel).not.toHaveBeenCalled();
+  });
+
+  it("forwards audio consent only for the current generation when the host made it available", async () => {
+    const token = "Z".repeat(43);
+    const bridge = {
+      list: vi.fn()
+        .mockResolvedValueOnce({ generation: 20, sources: [{ token, name: "Ekran", kind: "screen" }], systemAudioAvailable: true })
+        .mockResolvedValueOnce({ generation: 21, sources: [{ token, name: "Ekran", kind: "screen" }], systemAudioAvailable: false }),
+      choose: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true).mockResolvedValueOnce(true),
+      cancel: vi.fn()
+    };
+    const api = createPickerPreloadApi(bridge);
+
+    await api.getSources();
+    expect(api.systemAudioAvailable()).toBe(true);
+    await expect(api.choose(token, true)).resolves.toBe(false);
+    expect(api.systemAudioAvailable()).toBe(true);
+    await expect(api.choose(token, true)).resolves.toBe(true);
+    expect(bridge.choose).toHaveBeenNthCalledWith(2, { generation: 20, token, includeSystemAudio: true });
+    expect(api.systemAudioAvailable()).toBe(false);
+
+    await api.getSources();
+    expect(api.systemAudioAvailable()).toBe(false);
+    await expect(api.choose(token, true)).resolves.toBe(true);
+    expect(bridge.choose).toHaveBeenNthCalledWith(3, { generation: 21, token, includeSystemAudio: false });
   });
 
   it("rejects a non-PNG thumbnail payload instead of forwarding it to the picker DOM", async () => {
@@ -156,11 +184,14 @@ describe("picker IPC boundary", () => {
     const cancelling = api.cancel();
     expect(bridge.cancel).not.toHaveBeenCalled();
     await Promise.resolve();
-    resolveList?.({ generation: 15, sources: [] });
+    resolveList?.({ generation: 15, sources: [], systemAudioAvailable: true });
     await loading;
     await cancelling;
     expect(bridge.cancel).toHaveBeenCalledOnce();
     expect(bridge.cancel).toHaveBeenCalledWith({ generation: 15 });
+    expect(api.systemAudioAvailable()).toBe(false);
+    await expect(api.choose("Q".repeat(43), true)).resolves.toBe(false);
+    expect(bridge.choose).not.toHaveBeenCalled();
   });
 
   it("preserves the current generation when a choose or cancel IPC attempt is rejected", async () => {
@@ -178,7 +209,7 @@ describe("picker IPC boundary", () => {
     await expect(chooseApi.choose(token)).resolves.toBe(false);
     await expect(chooseApi.choose(token)).resolves.toBe(true);
     expect(bridge.choose).toHaveBeenCalledTimes(2);
-    expect(bridge.choose).toHaveBeenNthCalledWith(2, { generation: 16, token });
+    expect(bridge.choose).toHaveBeenNthCalledWith(2, { generation: 16, token, includeSystemAudio: false });
 
     const cancelApi = createPickerPreloadApi(bridge);
     await cancelApi.getSources();

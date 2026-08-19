@@ -66,9 +66,9 @@ describe("local picker host", () => {
   it("returns source data only to the active exact local main frame", async () => {
     const f = fixture();
     const sources = [{ token: "S".repeat(43), name: "Monitor", kind: "screen" as const }];
-    f.host.present({ generation: 6, sources }, vi.fn());
+    f.host.present({ generation: 6, sources, systemAudioAvailable: true }, vi.fn());
     const validEvent = { sender: f.contents, senderFrame: f.mainFrame };
-    await expect(f.invoke(PICKER_IPC_CHANNELS.list, validEvent)).resolves.toEqual({ generation: 6, sources });
+    await expect(f.invoke(PICKER_IPC_CHANNELS.list, validEvent)).resolves.toEqual({ generation: 6, sources, systemAudioAvailable: true });
     await expect(f.invoke(PICKER_IPC_CHANNELS.list, { sender: {}, senderFrame: {} })).resolves.toEqual({ generation: 0, sources: [] });
   });
 
@@ -78,11 +78,49 @@ describe("local picker host", () => {
     f.host.present({ generation: 3, sources: [{ token: "T".repeat(43), name: "Okno", kind: "window" }] }, settle);
     const event = { sender: f.contents, senderFrame: f.mainFrame };
     await expect(f.invoke(PICKER_IPC_CHANNELS.choose, event, { generation: 2, token: "T".repeat(43) })).resolves.toBe(false);
-    await expect(f.invoke(PICKER_IPC_CHANNELS.choose, event, { generation: 3, token: "T".repeat(43) })).resolves.toBe(true);
+    await expect(f.invoke(PICKER_IPC_CHANNELS.choose, event, { generation: 3, token: "T".repeat(43), includeSystemAudio: false })).resolves.toBe(true);
     expect(settle).toHaveBeenCalledOnce();
-    expect(settle).toHaveBeenCalledWith({ generation: 3, token: "T".repeat(43) });
+    expect(settle).toHaveBeenCalledWith({ generation: 3, token: "T".repeat(43), includeSystemAudio: false });
     expect(f.window.destroy).toHaveBeenCalledOnce();
     await expect(f.invoke(PICKER_IPC_CHANNELS.list, event)).resolves.toEqual({ generation: 0, sources: [] });
+  });
+
+  it("rejects smuggled, hostile, or stale audio consent and keeps the current picker retryable", async () => {
+    const f = fixture();
+    const settle = vi.fn();
+    const token = "A".repeat(43);
+    f.host.present({
+      generation: 11,
+      sources: [{ token, name: "Monitor", kind: "screen" }],
+      systemAudioAvailable: false
+    }, settle);
+    const event = { sender: f.contents, senderFrame: f.mainFrame };
+
+    await expect(f.invoke(PICKER_IPC_CHANNELS.choose, event, {
+      generation: 11,
+      token,
+      includeSystemAudio: true
+    })).resolves.toBe(false);
+    const trapped = Object.defineProperties({}, {
+      generation: { value: 11, enumerable: true },
+      token: { value: token, enumerable: true },
+      includeSystemAudio: { get: () => { throw new Error("trap"); }, enumerable: true }
+    });
+    await expect(f.invoke(PICKER_IPC_CHANNELS.choose, event, trapped)).resolves.toBe(false);
+    await expect(f.invoke(PICKER_IPC_CHANNELS.choose, event, {
+      generation: 10,
+      token,
+      includeSystemAudio: false
+    })).resolves.toBe(false);
+    expect(settle).not.toHaveBeenCalled();
+
+    await expect(f.invoke(PICKER_IPC_CHANNELS.choose, event, {
+      generation: 11,
+      token,
+      includeSystemAudio: false
+    })).resolves.toBe(true);
+    expect(settle).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith({ generation: 11, token, includeSystemAudio: false });
   });
 
   it("treats the Polish cancel action, picker close, load failure, and shutdown as cancellation", async () => {

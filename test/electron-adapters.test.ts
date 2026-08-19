@@ -2,19 +2,19 @@ import { describe, expect, it, vi } from "vitest";
 import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createTraySafely, createWindowCallbacks } from "../src/desktop/electron-adapters.js";
 
 describe("Electron callback adapters", () => {
-  it("uses frame origins for both permission callback forms and fails closed", () => {
+  it("fails closed without media consent and keeps origin checks for non-media permissions", () => {
     const handlers = createPermissionCallbacks();
-    expect(handlers.check("media", "https://call.soia.info/", { mediaType: "audio" })).toBe(true);
+    expect(handlers.check("media", "https://call.soia.info/", { mediaType: "audio" })).toBe(false);
     expect(handlers.check("media", "https://civcom.soia.info/", { mediaType: "display" })).toBe(false);
     expect(handlers.check("notifications", "https://matrix.soia.info/", {})).toBe(false);
     expect(handlers.check("notifications", "https://call.soia.info/conference/42", {})).toBe(true);
     expect(handlers.check("fullscreen", "https://call.soia.info/", {})).toBe(true);
-    expect(handlers.request("media", { requestingUrl: "https://call.soia.info/", mediaTypes: ["video"] })).toBe(true);
+    expect(handlers.request("media", { requestingUrl: "https://call.soia.info/", mediaTypes: ["video"] })).toBe(false);
     expect(handlers.request("media", { mediaTypes: ["audio"] })).toBe(false);
-    expect(handlers.check("media", "https://call.soia.info", { securityOrigin: "https://call.soia.info/conference/42", mediaType: "audio" })).toBe(true);
+    expect(handlers.check("media", "https://call.soia.info", { securityOrigin: "https://call.soia.info/conference/42", mediaType: "audio" })).toBe(false);
     expect(handlers.check("media", "https://call.soia.info", { securityOrigin: "https://civcom.soia.info/", mediaType: "audio" })).toBe(false);
     expect(handlers.request("media", { securityOrigin: "https://call.soia.info", requestingUrl: "https://civcom.soia.info/", mediaTypes: ["video"] })).toBe(false);
-    expect(handlers.request("media", { securityOrigin: "https://call.soia.info/?x=1", mediaTypes: ["video"] })).toBe(true);
+    expect(handlers.request("media", { securityOrigin: "https://call.soia.info/?x=1", mediaTypes: ["video"] })).toBe(false);
     expect(handlers.request("media", { securityOrigin: "https://call.soia.info.evil/", mediaTypes: ["video"] })).toBe(false);
     expect(handlers.request("media", { securityOrigin: "https://call.soia.info/", mediaTypes: new Proxy(["audio"], { getOwnPropertyDescriptor: () => { throw new Error("length trap"); } }) })).toBe(false);
     const accessorArray = ["audio"];

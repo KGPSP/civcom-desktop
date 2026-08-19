@@ -16,6 +16,14 @@ type ActivePicker = {
   presentation: PickerPresentation | undefined;
 };
 
+type PickerSelection = Readonly<{
+  generation: number;
+  token: string;
+  includeSystemAudio: boolean;
+}>;
+
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
 export type LocalPickerHost = Readonly<{
   present(presentation: PickerPresentation, settle: (decision: unknown) => void): PickerHandle;
   shutdown(): void;
@@ -26,6 +34,25 @@ function ownGeneration(value: unknown): unknown {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
     const descriptor = Object.getOwnPropertyDescriptor(value, "generation");
     return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function snapshotSelection(value: unknown): PickerSelection | undefined {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+    const generation = Object.getOwnPropertyDescriptor(value, "generation");
+    const token = Object.getOwnPropertyDescriptor(value, "token");
+    const audio = Object.getOwnPropertyDescriptor(value, "includeSystemAudio");
+    if (
+      generation === undefined || !("value" in generation) || !Number.isSafeInteger(generation.value) || generation.value <= 0 ||
+      token === undefined || !("value" in token) || typeof token.value !== "string" || !TOKEN_PATTERN.test(token.value) ||
+      audio === undefined || !("value" in audio) || typeof audio.value !== "boolean"
+    ) return undefined;
+    return Object.freeze({ generation: generation.value as number, token: token.value, includeSystemAudio: audio.value });
   } catch {
     return undefined;
   }
@@ -62,13 +89,20 @@ export function createLocalPickerHost(dependencies: Readonly<{
   dependencies.ipcMain.handle(PICKER_IPC_CHANNELS.list, (event) => {
     const candidate = active;
     if (candidate === undefined || currentFor(event, candidate.generation) === undefined || candidate.presentation === undefined) return emptyPayload();
-    return Object.freeze({ generation: candidate.generation, sources: candidate.presentation.sources });
+    return Object.freeze({
+      generation: candidate.generation,
+      sources: candidate.presentation.sources,
+      systemAudioAvailable: candidate.presentation.systemAudioAvailable === true
+    });
   });
   dependencies.ipcMain.handle(PICKER_IPC_CHANNELS.choose, (event, selection: unknown) => {
-    const generation = ownGeneration(selection);
-    const candidate = currentFor(event, generation);
-    if (candidate === undefined) return false;
-    deactivate(candidate, selection, true);
+    const snapshot = snapshotSelection(selection);
+    const candidate = currentFor(event, snapshot?.generation);
+    if (
+      snapshot === undefined || candidate === undefined ||
+      (snapshot.includeSystemAudio && candidate.presentation?.systemAudioAvailable !== true)
+    ) return false;
+    deactivate(candidate, snapshot, true);
     return true;
   });
   dependencies.ipcMain.handle(PICKER_IPC_CHANNELS.cancel, (event, request: unknown) => {

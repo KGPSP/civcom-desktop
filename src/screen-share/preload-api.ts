@@ -2,13 +2,14 @@ import type { PickerSource } from "./source-catalog.js";
 
 export type PickerPreloadBridge = Readonly<{
   list(): Promise<unknown>;
-  choose(selection: Readonly<{ generation: number; token: string }>): Promise<unknown>;
+  choose(selection: Readonly<{ generation: number; token: string; includeSystemAudio: boolean }>): Promise<unknown>;
   cancel(request: Readonly<{ generation: number }>): Promise<unknown>;
 }>;
 
 export type PickerPreloadApi = Readonly<{
   getSources(): Promise<readonly PickerSource[]>;
-  choose(token: unknown): Promise<boolean>;
+  systemAudioAvailable(): boolean;
+  choose(token: unknown, includeSystemAudio?: unknown): Promise<boolean>;
   cancel(): Promise<boolean>;
 }>;
 
@@ -20,12 +21,20 @@ function ownValue(input: object, key: string): unknown {
   return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
 }
 
-function parseSources(value: unknown): Readonly<{ generation: number; sources: readonly PickerSource[] }> | undefined {
+function parseSources(value: unknown): Readonly<{
+  generation: number;
+  sources: readonly PickerSource[];
+  systemAudioAvailable: boolean;
+}> | undefined {
   try {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
     const generation = ownValue(value, "generation");
     const inputSources = ownValue(value, "sources");
-    if (!Number.isSafeInteger(generation) || (generation as number) <= 0 || !Array.isArray(inputSources) || inputSources.length > 100) return undefined;
+    const audioAvailable = ownValue(value, "systemAudioAvailable");
+    if (
+      !Number.isSafeInteger(generation) || (generation as number) <= 0 || !Array.isArray(inputSources) || inputSources.length > 100 ||
+      (audioAvailable !== undefined && typeof audioAvailable !== "boolean")
+    ) return undefined;
     const sources: PickerSource[] = [];
     for (let index = 0; index < inputSources.length; index += 1) {
       const itemDescriptor = Object.getOwnPropertyDescriptor(inputSources, String(index));
@@ -43,7 +52,11 @@ function parseSources(value: unknown): Readonly<{ generation: number; sources: r
       ) return undefined;
       sources.push(Object.freeze({ token, name, kind, ...(thumbnailDataUrl === undefined ? {} : { thumbnailDataUrl }) }));
     }
-    return Object.freeze({ generation: generation as number, sources: Object.freeze(sources) });
+    return Object.freeze({
+      generation: generation as number,
+      sources: Object.freeze(sources),
+      systemAudioAvailable: audioAvailable === true
+    });
   } catch {
     return undefined;
   }
@@ -51,6 +64,7 @@ function parseSources(value: unknown): Readonly<{ generation: number; sources: r
 
 export function createPickerPreloadApi(bridge: PickerPreloadBridge): PickerPreloadApi {
   let generation: number | undefined;
+  let audioAvailable = false;
   let pendingGeneration: Promise<number | undefined> | undefined;
   return Object.freeze({
     async getSources(): Promise<readonly PickerSource[]> {
@@ -62,20 +76,34 @@ export function createPickerPreloadApi(bridge: PickerPreloadBridge): PickerPrelo
         if (pendingGeneration === currentPendingGeneration) pendingGeneration = undefined;
       }
       generation = payload?.generation;
+      audioAvailable = payload?.systemAudioAvailable === true;
       return payload?.sources ?? Object.freeze([]);
     },
-    async choose(token: unknown): Promise<boolean> {
+    systemAudioAvailable(): boolean {
+      return generation !== undefined && audioAvailable;
+    },
+    async choose(token: unknown, includeSystemAudio: unknown = false): Promise<boolean> {
       const current = generation;
       if (current === undefined || typeof token !== "string" || !TOKEN_PATTERN.test(token)) return false;
-      const accepted = await bridge.choose(Object.freeze({ generation: current, token })) === true;
-      if (accepted && generation === current) generation = undefined;
+      const accepted = await bridge.choose(Object.freeze({
+        generation: current,
+        token,
+        includeSystemAudio: audioAvailable && includeSystemAudio === true
+      })) === true;
+      if (accepted && generation === current) {
+        generation = undefined;
+        audioAvailable = false;
+      }
       return accepted;
     },
     async cancel(): Promise<boolean> {
       const current = generation ?? await pendingGeneration;
       if (current === undefined) return false;
       const accepted = await bridge.cancel(Object.freeze({ generation: current })) === true;
-      if (accepted && generation === current) generation = undefined;
+      if (accepted && generation === current) {
+        generation = undefined;
+        audioAvailable = false;
+      }
       return accepted;
     }
   });

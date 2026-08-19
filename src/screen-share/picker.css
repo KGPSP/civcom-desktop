@@ -16,6 +16,9 @@ h1 { margin: 0 0 8px; font-size: 24px; }
 .kind { color: #687789; font-size: 12px; font-weight: 600; text-transform: uppercase; }
 .name { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 32px; text-align: center; color: #687789; }
+.audio-option { display: flex; align-items: center; gap: 9px; width: fit-content; margin-top: 18px; padding: 10px 12px; background: white; border: 1px solid #cad3de; border-radius: 6px; cursor: pointer; }
+.audio-option[hidden] { display: none; }
+.audio-option input { width: 18px; height: 18px; margin: 0; }
 .actions { display: flex; justify-content: flex-end; margin-top: 20px; }
 .actions button { min-width: 110px; padding: 9px 18px; color: #152842; background: white; border: 1px solid #9caabc; border-radius: 6px; cursor: pointer; }
 button:disabled { cursor: default; opacity: .55; }

@@ -33,11 +33,14 @@ async function start(): Promise<void> {
   const list = document.getElementById("sources");
   const empty = document.getElementById("empty");
   const cancel = document.getElementById("cancel") as HTMLButtonElement | null;
-  if (api === undefined || list === null || empty === null || cancel === null) return;
+  const audioOption = document.getElementById("system-audio-option") as HTMLLabelElement | null;
+  const systemAudio = document.getElementById("system-audio") as HTMLInputElement | null;
+  if (api === undefined || list === null || empty === null || cancel === null || audioOption === null || systemAudio === null) return;
   let pending = false;
   const setPending = (value: boolean): void => {
     pending = value;
     cancel.disabled = value;
+    systemAudio.disabled = value;
     for (const button of list.querySelectorAll("button")) button.disabled = value;
   };
   cancel.addEventListener("click", () => {
@@ -46,10 +49,14 @@ async function start(): Promise<void> {
   });
   const sources = await api.getSources().catch(() => Object.freeze([] as PickerSource[]));
   if (sources.length === 0) { empty.hidden = false; return; }
+  let audioAvailable = false;
+  try { audioAvailable = api.systemAudioAvailable() === true; } catch { /* unavailable is the safe default */ }
+  audioOption.hidden = !audioAvailable;
+  systemAudio.checked = false;
   for (const source of sources) {
     const card = sourceCard(document, source, (token) => {
       if (pending) return;
-      void runPickerAction(() => api.choose(token), setPending);
+      void runPickerAction(() => api.choose(token, audioAvailable && systemAudio.checked === true), setPending);
     });
     card.disabled = pending;
     list.append(card);

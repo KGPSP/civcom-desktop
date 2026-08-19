@@ -10,6 +10,7 @@ const channels = Object.freeze({
 const tokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const pngDataUrlPattern = /^data:image\/png;base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 let generation;
+let audioAvailable = false;
 let pendingGeneration;
 
 function ownValue(input, key) {
@@ -22,7 +23,11 @@ function parsePayload(value) {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
     const nextGeneration = ownValue(value, "generation");
     const inputSources = ownValue(value, "sources");
-    if (!Number.isSafeInteger(nextGeneration) || nextGeneration <= 0 || !Array.isArray(inputSources) || inputSources.length > 100) return undefined;
+    const systemAudioAvailable = ownValue(value, "systemAudioAvailable");
+    if (
+      !Number.isSafeInteger(nextGeneration) || nextGeneration <= 0 || !Array.isArray(inputSources) || inputSources.length > 100 ||
+      (systemAudioAvailable !== undefined && typeof systemAudioAvailable !== "boolean")
+    ) return undefined;
     const sources = [];
     for (let index = 0; index < inputSources.length; index += 1) {
       const descriptor = Object.getOwnPropertyDescriptor(inputSources, String(index));
@@ -40,7 +45,11 @@ function parsePayload(value) {
       ) return undefined;
       sources.push(Object.freeze({ token, name, kind, ...(thumbnailDataUrl === undefined ? {} : { thumbnailDataUrl }) }));
     }
-    return Object.freeze({ generation: nextGeneration, sources: Object.freeze(sources) });
+    return Object.freeze({
+      generation: nextGeneration,
+      sources: Object.freeze(sources),
+      systemAudioAvailable: systemAudioAvailable === true
+    });
   } catch {
     return undefined;
   }
@@ -56,20 +65,34 @@ const api = Object.freeze({
       if (pendingGeneration === currentPendingGeneration) pendingGeneration = undefined;
     }
     generation = payload?.generation;
+    audioAvailable = payload?.systemAudioAvailable === true;
     return payload?.sources ?? Object.freeze([]);
   },
-  async choose(token) {
+  systemAudioAvailable() {
+    return generation !== undefined && audioAvailable;
+  },
+  async choose(token, includeSystemAudio = false) {
     const current = generation;
     if (current === undefined || typeof token !== "string" || !tokenPattern.test(token)) return false;
-    const accepted = await ipcRenderer.invoke(channels.choose, Object.freeze({ generation: current, token })) === true;
-    if (accepted && generation === current) generation = undefined;
+    const accepted = await ipcRenderer.invoke(channels.choose, Object.freeze({
+      generation: current,
+      token,
+      includeSystemAudio: audioAvailable && includeSystemAudio === true
+    })) === true;
+    if (accepted && generation === current) {
+      generation = undefined;
+      audioAvailable = false;
+    }
     return accepted;
   },
   async cancel() {
     const current = generation ?? await pendingGeneration;
     if (current === undefined) return false;
     const accepted = await ipcRenderer.invoke(channels.cancel, Object.freeze({ generation: current })) === true;
-    if (accepted && generation === current) generation = undefined;
+    if (accepted && generation === current) {
+      generation = undefined;
+      audioAvailable = false;
+    }
     return accepted;
   }
 });

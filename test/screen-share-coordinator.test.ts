@@ -101,22 +101,84 @@ describe("display-media coordinator", () => {
     expect(callback).toHaveBeenCalledOnce();
   });
 
-  it("grants loopback only for an explicit Windows audio request", async () => {
-    const windows = harness({ platform: "win32" });
-    const winCallback = vi.fn();
-    windows.coordinator.handle(displayRequest({ audioRequested: true }), winCallback);
+  it("keeps Windows capture video-only until the picker returns explicit audio consent", async () => {
+    const videoOnly = harness({ platform: "win32" });
+    const videoOnlyCallback = vi.fn();
+    videoOnly.coordinator.handle(displayRequest({ audioRequested: true }), videoOnlyCallback);
     await turn();
-    windows.decide({ generation: windows.presentation()?.generation, token: TOKEN });
+    expect(videoOnly.presentation()).toMatchObject({ systemAudioAvailable: true });
+    videoOnly.decide({
+      generation: videoOnly.presentation()?.generation,
+      token: TOKEN,
+      includeSystemAudio: false
+    });
     await turn();
-    expect(winCallback).toHaveBeenCalledWith({ video: windows.source, audio: "loopback" });
+    expect(videoOnlyCallback).toHaveBeenCalledWith({ video: videoOnly.source });
 
-    const mac = harness({ platform: "darwin", systemVersion: "14.7" });
-    const macCallback = vi.fn();
-    mac.coordinator.handle(displayRequest({ audioRequested: true }), macCallback);
+    const consented = harness({ platform: "win32" });
+    const consentedCallback = vi.fn();
+    consented.coordinator.handle(displayRequest({ audioRequested: true }), consentedCallback);
     await turn();
-    mac.decide({ generation: mac.presentation()?.generation, token: TOKEN });
+    consented.decide({
+      generation: consented.presentation()?.generation,
+      token: TOKEN,
+      includeSystemAudio: true
+    });
     await turn();
-    expect(macCallback).toHaveBeenCalledWith({ video: mac.source });
+    expect(consentedCallback).toHaveBeenCalledWith({ video: consented.source, audio: "loopback" });
+  });
+
+  it("never exposes or grants loopback when Windows audio was not requested or on another platform", async () => {
+    for (const [h, audioRequested] of [
+      [harness({ platform: "win32" }), false],
+      [harness({ platform: "darwin", systemVersion: "14.7" }), true],
+      [harness({ platform: "linux", sessionType: "x11" }), true]
+    ] as const) {
+      const callback = vi.fn();
+      h.coordinator.handle(displayRequest({ audioRequested }), callback);
+      await turn();
+      expect(h.presentation()).toMatchObject({ systemAudioAvailable: false });
+      h.decide({
+        generation: h.presentation()?.generation,
+        token: TOKEN,
+        includeSystemAudio: true
+      });
+      await turn();
+      expect(callback).toHaveBeenCalledWith({ video: h.source });
+    }
+  });
+
+  it("fails closed for hostile or generation-stale audio consent and allows a fresh video-only retry", async () => {
+    const hostile = harness({ platform: "win32" });
+    const hostileCallback = vi.fn();
+    hostile.coordinator.handle(displayRequest({ audioRequested: true }), hostileCallback);
+    await turn();
+    const trapped = Object.defineProperties({}, {
+      generation: { value: hostile.presentation()?.generation, enumerable: true },
+      token: { value: TOKEN, enumerable: true },
+      includeSystemAudio: { get: () => { throw new Error("consent trap"); }, enumerable: true }
+    });
+    expect(() => hostile.decide(trapped)).not.toThrow();
+    expect(hostileCallback).toHaveBeenCalledWith({});
+
+    const stale = harness({ platform: "win32" });
+    const staleCallback = vi.fn();
+    stale.coordinator.handle(displayRequest({ audioRequested: true }), staleCallback);
+    await turn();
+    stale.decide({
+      generation: Number(stale.presentation()?.generation) + 1,
+      token: TOKEN,
+      includeSystemAudio: true
+    });
+    expect(staleCallback).toHaveBeenCalledWith({});
+
+    const retry = harness({ platform: "win32" });
+    const retryCallback = vi.fn();
+    retry.coordinator.handle(displayRequest({ audioRequested: true }), retryCallback);
+    await turn();
+    retry.decide({ generation: retry.presentation()?.generation, token: TOKEN, includeSystemAudio: false });
+    await turn();
+    expect(retryCallback).toHaveBeenCalledWith({ video: retry.source });
   });
 
   it("uses the safe local fallback if a macOS 15 system-picker handler is invoked", async () => {

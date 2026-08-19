@@ -4,6 +4,7 @@ import { createOpaqueSourceCatalog, type CaptureSourceCandidate, type OpaqueSour
 export type PickerPresentation = Readonly<{
   generation: number;
   sources: readonly PickerSource[];
+  systemAudioAvailable?: boolean;
 }>;
 
 export type PickerHandle = Readonly<{ destroy(): void }>;
@@ -34,7 +35,7 @@ export type DisplayMediaCoordinatorDependencies<T> = Readonly<{
 type ActiveRequest<T> = {
   readonly generation: number;
   readonly frame: object;
-  readonly audioRequested: boolean;
+  readonly systemAudioAvailable: boolean;
   readonly callback: (streams: CaptureStreams<T>) => void;
   settled: boolean;
   catalog: OpaqueSourceCatalog<T> | undefined;
@@ -42,6 +43,35 @@ type ActiveRequest<T> = {
   stopWatching: (() => void) | undefined;
   stopOperationTimeout: (() => void) | undefined;
 };
+
+type PickerDecision = Readonly<{
+  generation: number;
+  token: string;
+  includeSystemAudio: boolean;
+}>;
+
+function snapshotPickerDecision(value: unknown): PickerDecision | undefined {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+    const generation = Object.getOwnPropertyDescriptor(value, "generation");
+    const token = Object.getOwnPropertyDescriptor(value, "token");
+    const audio = Object.getOwnPropertyDescriptor(value, "includeSystemAudio");
+    if (
+      generation === undefined || !("value" in generation) || !Number.isSafeInteger(generation.value) || generation.value <= 0 ||
+      token === undefined || !("value" in token) || typeof token.value !== "string" ||
+      (audio !== undefined && (!("value" in audio) || typeof audio.value !== "boolean"))
+    ) return undefined;
+    return Object.freeze({
+      generation: generation.value as number,
+      token: token.value,
+      includeSystemAudio: audio === undefined ? false : audio.value
+    });
+  } catch {
+    return undefined;
+  }
+}
 
 function safeArray<T>(value: unknown): readonly T[] | undefined {
   try {
@@ -110,7 +140,7 @@ export class DisplayMediaCoordinator<T> {
     const active: ActiveRequest<T> = {
       generation: ++this.#generation,
       frame: request.frame,
-      audioRequested: request.audioRequested,
+      systemAudioAvailable: request.audioRequested && this.#platform === "win32",
       callback,
       settled: false,
       catalog: undefined,
@@ -163,7 +193,11 @@ export class DisplayMediaCoordinator<T> {
     const catalog = createOpaqueSourceCatalog<T>(active.generation, sources, this.dependencies.createToken);
     active.catalog = catalog;
     if (catalog.sources.length === 0) { this.finish(active); return; }
-    const presentation = Object.freeze({ generation: active.generation, sources: catalog.sources });
+    const presentation = Object.freeze({
+      generation: active.generation,
+      sources: catalog.sources,
+      systemAudioAvailable: active.systemAudioAvailable
+    });
     try {
       const picker = this.dependencies.presentPicker(presentation, (decision) => this.pickerDecision(active, decision));
       if (this.isCurrent(active)) active.picker = picker;
@@ -175,8 +209,9 @@ export class DisplayMediaCoordinator<T> {
 
   private pickerDecision(active: ActiveRequest<T>, decision: unknown): void {
     if (!this.isCurrent(active)) return;
-    const selected = active.catalog?.resolve(decision);
-    if (selected === undefined || !this.frameUsable(active.frame)) { this.finish(active); return; }
+    const snapshot = snapshotPickerDecision(decision);
+    const selected = snapshot === undefined ? undefined : active.catalog?.resolve(snapshot);
+    if (snapshot === undefined || selected === undefined || !this.frameUsable(active.frame)) { this.finish(active); return; }
     const catalog = active.catalog;
     active.catalog = undefined;
     catalog?.clear();
@@ -189,12 +224,15 @@ export class DisplayMediaCoordinator<T> {
       return;
     }
     void Promise.resolve(pending).then(
-      (refreshed) => { this.clearOperationTimeout(active); this.finish(active, snapshotCandidate<T>(refreshed)?.source); },
+      (refreshed) => {
+        this.clearOperationTimeout(active);
+        this.finish(active, snapshotCandidate<T>(refreshed)?.source, undefined, snapshot.includeSystemAudio);
+      },
       () => { this.clearOperationTimeout(active); this.finish(active, undefined, "source-error"); }
     );
   }
 
-  private finish(active: ActiveRequest<T>, source?: T, logCode?: ScreenShareLogCode): void {
+  private finish(active: ActiveRequest<T>, source?: T, logCode?: ScreenShareLogCode, includeSystemAudio = false): void {
     if (!this.isCurrent(active)) return;
     active.settled = true;
     const catalog = active.catalog;
@@ -209,7 +247,7 @@ export class DisplayMediaCoordinator<T> {
     this.safeAction(() => picker?.destroy());
     if (logCode !== undefined) this.safeLog(logCode);
     const streams: CaptureStreams<T> = source !== undefined && this.frameUsable(active.frame)
-      ? Object.freeze({ video: source, ...(active.audioRequested && this.#platform === "win32" ? { audio: "loopback" as const } : {}) })
+      ? Object.freeze({ video: source, ...(active.systemAudioAvailable && includeSystemAudio ? { audio: "loopback" as const } : {}) })
       : Object.freeze({});
     this.callCallback(active.callback, streams);
     if (this.#active === active) this.#active = undefined;

@@ -25,13 +25,14 @@ describe("packaged sandboxed picker preload", () => {
     runInNewContext(source, { require: requireModule });
     expect(requireModule).toHaveBeenCalledOnce();
     expect(exposedName).toBe("civcomScreenPicker");
-    expect(Object.keys(exposedApi ?? {}).sort()).toEqual(["cancel", "choose", "getSources"]);
+    expect(Object.keys(exposedApi ?? {}).sort()).toEqual(["cancel", "choose", "getSources", "systemAudioAvailable"]);
     expect(Object.isFrozen(exposedApi)).toBe(true);
     if (exposedApi === undefined) throw new Error("preload API not exposed");
     expect(JSON.stringify(await exposedApi.getSources?.())).toBe(JSON.stringify([{ token: "P".repeat(43), name: "Monitor", kind: "screen" }]));
-    await exposedApi.choose?.("P".repeat(43));
+    expect(await exposedApi.systemAudioAvailable?.()).toBe(false);
+    await exposedApi.choose?.("P".repeat(43), true);
     expect(invoke.mock.calls[1]?.[0]).toBe("civcom-screen-picker:choose");
-    expect(JSON.stringify(invoke.mock.calls[1]?.[1])).toBe(JSON.stringify({ generation: 5, token: "P".repeat(43) }));
+    expect(JSON.stringify(invoke.mock.calls[1]?.[1])).toBe(JSON.stringify({ generation: 5, token: "P".repeat(43), includeSystemAudio: false }));
     listPayload = {
       generation: 6,
       sources: [{
@@ -47,20 +48,24 @@ describe("packaged sandboxed picker preload", () => {
     listPayload = new Promise<unknown>((resolve) => { resolvePendingList = resolve; });
     const pendingSources = exposedApi.getSources?.();
     const pendingCancel = exposedApi.cancel?.();
-    resolvePendingList?.({ generation: 7, sources: [] });
+    resolvePendingList?.({ generation: 7, sources: [], systemAudioAvailable: true });
     await pendingSources;
     await pendingCancel;
     expect(invoke.mock.calls.at(-1)?.[0]).toBe("civcom-screen-picker:cancel");
     expect(JSON.stringify(invoke.mock.calls.at(-1)?.[1])).toBe(JSON.stringify({ generation: 7 }));
+    expect(await exposedApi.systemAudioAvailable?.()).toBe(false);
+    await expect(exposedApi.choose?.("P".repeat(43), true)).resolves.toBe(false);
 
-    listPayload = { generation: 8, sources: [{ token: "P".repeat(43), name: "Monitor", kind: "screen" }] };
+    listPayload = { generation: 8, sources: [{ token: "P".repeat(43), name: "Monitor", kind: "screen" }], systemAudioAvailable: true };
     await exposedApi.getSources?.();
+    expect(await exposedApi.systemAudioAvailable?.()).toBe(true);
     decisionResult = false;
-    await expect(exposedApi.choose?.("P".repeat(43))).resolves.toBe(false);
+    await expect(exposedApi.choose?.("P".repeat(43), true)).resolves.toBe(false);
     decisionResult = true;
-    await expect(exposedApi.choose?.("P".repeat(43))).resolves.toBe(true);
+    await expect(exposedApi.choose?.("P".repeat(43), true)).resolves.toBe(true);
     const chooseCalls = invoke.mock.calls.filter(([channel]) => channel === "civcom-screen-picker:choose");
     expect(chooseCalls).toHaveLength(3);
-    expect(JSON.stringify(chooseCalls.at(-1)?.[1])).toBe(JSON.stringify({ generation: 8, token: "P".repeat(43) }));
+    expect(JSON.stringify(chooseCalls.at(-1)?.[1])).toBe(JSON.stringify({ generation: 8, token: "P".repeat(43), includeSystemAudio: true }));
+    expect(await exposedApi.systemAudioAvailable?.()).toBe(false);
   });
 });

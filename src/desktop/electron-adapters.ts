@@ -3,13 +3,13 @@ import { OFFLINE_RETRY_URL, sanitizeDownloadBasename } from "./shell.js";
 
 type SafeLog = (event: unknown) => void;
 
-type DetailSnapshot = Readonly<{ kind: "ok"; securityOrigin?: unknown; requestingUrl?: unknown; mediaType?: unknown; mediaTypes?: unknown }> | Readonly<{ kind: "error" }>;
+type DetailSnapshot = Readonly<{ kind: "ok"; isMainFrame?: unknown; securityOrigin?: unknown; requestingUrl?: unknown; mediaType?: unknown; mediaTypes?: unknown }> | Readonly<{ kind: "error" }>;
 
 function snapshotDetails(input: unknown): DetailSnapshot {
   if (input === null || typeof input !== "object") return Object.freeze({ kind: "error" });
   try {
     const values: Record<string, unknown> = {};
-    for (const key of ["securityOrigin", "requestingUrl", "mediaType", "mediaTypes"] as const) {
+    for (const key of ["isMainFrame", "securityOrigin", "requestingUrl", "mediaType", "mediaTypes"] as const) {
       const descriptor = Object.getOwnPropertyDescriptor(input, key);
       if (descriptor === undefined) continue;
       if (!("value" in descriptor)) return Object.freeze({ kind: "error" });
@@ -22,6 +22,15 @@ function snapshotDetails(input: unknown): DetailSnapshot {
 function trustedOrigin(value: unknown): string | undefined {
   const result = classifyTrustedOrigin(value);
   return result.kind === "trusted" ? `https://${result.service}.soia.info/` : undefined;
+}
+
+function serializedTrustedOrigin(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed = new URL(value);
+    if (value !== parsed.origin && value !== `${parsed.origin}/`) return undefined;
+    return trustedOrigin(parsed.origin);
+  } catch { return undefined; }
 }
 
 function frameOrigin(details: Extract<DetailSnapshot, { kind: "ok" }>): string | undefined {
@@ -61,9 +70,67 @@ function mediaTypes(details: Extract<DetailSnapshot, { kind: "ok" }>, singular: 
   return safeMediaArray(value);
 }
 
-export function createPermissionCallbacks(): Readonly<{
-  check(permission: unknown, requestingOrigin: unknown, details: unknown): boolean;
-  request(permission: unknown, details: unknown): boolean;
+type PermissionFrame = Readonly<{
+  detached: boolean;
+  frameTreeNodeId: number;
+  framesInSubtree: readonly PermissionFrame[];
+  origin: string;
+  processId: number;
+  routingId: number;
+  url: string;
+  isDestroyed(): boolean;
+}>;
+
+type PermissionContents = Readonly<{ mainFrame: PermissionFrame }>;
+type MediaKind = "audio" | "video";
+type MediaPermissionPrompt = (request: Readonly<{ mediaTypes: readonly MediaKind[] }>, contents: PermissionContents) => Promise<boolean>;
+type FrameSnapshot = Readonly<{
+  frame: PermissionFrame;
+  frameTreeNodeId: number;
+  origin: string;
+  processId: number;
+  routingId: number;
+  url: string;
+}>;
+
+function snapshotFrame(frame: PermissionFrame): FrameSnapshot | undefined {
+  try {
+    if (frame.isDestroyed() || frame.detached) return undefined;
+    const { frameTreeNodeId, origin, processId, routingId, url } = frame;
+    if (![frameTreeNodeId, processId, routingId].every(Number.isInteger) || typeof origin !== "string" || typeof url !== "string") return undefined;
+    return Object.freeze({ frame, frameTreeNodeId, origin, processId, routingId, url });
+  } catch { return undefined; }
+}
+
+function sameFrame(left: FrameSnapshot, right: FrameSnapshot): boolean {
+  return left.frameTreeNodeId === right.frameTreeNodeId
+    && left.processId === right.processId
+    && left.routingId === right.routingId
+    && left.origin === right.origin
+    && left.url === right.url;
+}
+
+function resolveMediaRequestFrame(contents: PermissionContents, details: Extract<DetailSnapshot, { kind: "ok" }>): FrameSnapshot | undefined {
+  const requestOrigin = frameOrigin(details);
+  const requestUrl = details.requestingUrl;
+  const securityOrigin = serializedTrustedOrigin(details.securityOrigin);
+  if (requestOrigin === undefined || securityOrigin !== requestOrigin || typeof requestUrl !== "string" || typeof details.isMainFrame !== "boolean") return undefined;
+  let frames: readonly PermissionFrame[];
+  try {
+    frames = details.isMainFrame ? [contents.mainFrame] : contents.mainFrame.framesInSubtree;
+    if (!Array.isArray(frames) || frames.length > 128) return undefined;
+  } catch { return undefined; }
+  const matches: FrameSnapshot[] = [];
+  for (const frame of frames) {
+    const candidate = snapshotFrame(frame);
+    if (candidate !== undefined && candidate.url === requestUrl && trustedOrigin(candidate.origin) === requestOrigin) matches.push(candidate);
+  }
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function createPermissionCallbacks(dependencies?: Readonly<{ confirmMedia: MediaPermissionPrompt }>): Readonly<{
+  check(permission: unknown, requestingOrigin: unknown, details: unknown, contents?: PermissionContents | null): boolean;
+  request(permission: unknown, details: unknown, contents?: PermissionContents): boolean | Promise<boolean>;
 }> {
   const decide = (permission: unknown, origin: string | undefined, details: DetailSnapshot, singular: boolean): boolean => {
     if (details.kind === "error") return false;
@@ -73,8 +140,25 @@ export function createPermissionCallbacks(): Readonly<{
     return decision.permission !== "media" || mediaTypes(details, singular) !== undefined;
   };
   return Object.freeze({
-    check: (permission, requestingOrigin, details) => { const snapshot = snapshotDetails(details); return decide(permission, snapshot.kind === "ok" ? checkOrigin(requestingOrigin, snapshot) : undefined, snapshot, true); },
-    request: (permission, details) => { const snapshot = snapshotDetails(details); return decide(permission, snapshot.kind === "ok" ? frameOrigin(snapshot) : undefined, snapshot, false); }
+    check: (permission, requestingOrigin, details) => {
+      const snapshot = snapshotDetails(details);
+      if (permission === "media") return false;
+      return decide(permission, snapshot.kind === "ok" ? checkOrigin(requestingOrigin, snapshot) : undefined, snapshot, true);
+    },
+    request: (permission, details, contents) => {
+      const snapshot = snapshotDetails(details);
+      if (permission !== "media") return decide(permission, snapshot.kind === "ok" ? frameOrigin(snapshot) : undefined, snapshot, false);
+      if (dependencies === undefined || contents === undefined || snapshot.kind === "error") return false;
+      const requestedTypes = mediaTypes(snapshot, false);
+      const requestingFrame = resolveMediaRequestFrame(contents, snapshot);
+      if (requestedTypes === undefined || requestingFrame === undefined) return false;
+      const typedMedia = requestedTypes as readonly MediaKind[];
+      return dependencies.confirmMedia(Object.freeze({ mediaTypes: typedMedia }), contents).then((approved) => {
+        if (!approved) return false;
+        const currentFrame = resolveMediaRequestFrame(contents, snapshot);
+        return currentFrame !== undefined && sameFrame(requestingFrame, currentFrame);
+      }).catch(() => false);
+    }
   });
 }
 

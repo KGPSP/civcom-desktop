@@ -8,6 +8,7 @@ import { resolveVerifiedAppImageRuntime } from "./desktop/appimage-runtime.js";
 import { createPackagedSmokeResult, isPackagedSmokeRequested, packagedSmokeResultPath } from "./desktop/packaged-smoke.js";
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
 import { resolveStartUrl } from "./security/url-policy.js";
+import { installClientCertificateDenyHandler } from "./security/client-certificate.js";
 import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createTraySafely, createWindowCallbacks } from "./desktop/electron-adapters.js";
 import { DisplayMediaCoordinator } from "./screen-share/coordinator.js";
 import { watchFrameLifetime } from "./screen-share/frame-lifetime.js";
@@ -135,9 +136,28 @@ function configureSession(logger: RotatingSafeLogger, harness?: UnpackagedHarnes
     civcomSession.setDevicePermissionHandler(() => false);
     return civcomSession;
   }
-  const permission = createPermissionCallbacks();
-  civcomSession.setPermissionCheckHandler((_contents, name, requestingOrigin, details) => permission.check(name, requestingOrigin, details));
-  civcomSession.setPermissionRequestHandler((_contents, name, callback, details) => callback(permission.request(name, details)));
+  const permission = createPermissionCallbacks({
+    confirmMedia: async ({ mediaTypes }, contents) => {
+      const resource = mediaTypes.length === 2 ? "mikrofonu i kamery" : mediaTypes[0] === "audio" ? "mikrofonu" : "kamery";
+      const options = {
+        type: "question" as const,
+        buttons: ["Zezwól", "Odmów"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+        title: "CivCom — uprawnienia",
+        message: `CivCom prosi o dostęp do ${resource}.`,
+        detail: "Dostęp otrzyma tylko bieżące, zweryfikowane żądanie komunikatora."
+      };
+      const owner = BrowserWindow.fromWebContents(contents as Electron.WebContents);
+      const result = owner === null ? await dialog.showMessageBox(options) : await dialog.showMessageBox(owner, options);
+      return result.response === 0;
+    }
+  });
+  civcomSession.setPermissionCheckHandler((contents, name, requestingOrigin, details) => permission.check(name, requestingOrigin, details, contents));
+  civcomSession.setPermissionRequestHandler((contents, name, callback, details) => {
+    void Promise.resolve(permission.request(name, details, contents)).then(callback, () => callback(false));
+  });
   civcomSession.setDevicePermissionHandler(() => false);
   const environment = Object.freeze({
     platform: process.platform,
@@ -321,6 +341,7 @@ async function configureUpdater(logger: RotatingSafeLogger, packageType: Package
 }
 if (process.platform === "win32") app.setAppUserModelId("info.soia.civcom.desktop");
 if (!app.requestSingleInstanceLock()) app.quit(); else {
+  installClientCertificateDenyHandler(app);
   app.on("second-instance", showMainWindow);
   app.on("activate", showMainWindow);
   app.on("certificate-error", (event, _contents, _url, _error, _certificate, callback) => { event.preventDefault(); callback(false); });
