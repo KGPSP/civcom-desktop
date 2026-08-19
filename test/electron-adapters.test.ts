@@ -45,6 +45,9 @@ describe("Electron callback adapters", () => {
     navigation.navigate({ preventDefault: vi.fn() }, "javascript:alert(1)");
     expect(load).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith({ event: "navigation-denied", code: "UNCLASSIFIED" });
+    navigation.windowOpen("https://civcom.soia.info.evil.invalid/");
+    await Promise.resolve();
+    expect(openExternal).toHaveBeenCalledTimes(2);
   });
 
   it("fuses offline failures, fixes title and flushes a pending activation", () => {
@@ -61,6 +64,28 @@ describe("Electron callback adapters", () => {
     callbacks.activate();
     callbacks.ready(true, true);
     expect(show).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the absolute local retry sentinel only once after an offline failure", () => {
+    const load = vi.fn();
+    const callbacks = createWindowCallbacks({
+      startUrl: "https://civcom.soia.info/",
+      offlineUrl: "data:text/html,offline",
+      load,
+      show: vi.fn(),
+      hide: vi.fn(),
+      log: vi.fn()
+    });
+
+    callbacks.retry("about:blank#retry");
+    callbacks.failedLoad(-2, true, "https://civcom.soia.info/");
+    callbacks.retry("about:blank#retry-near-miss");
+    callbacks.retry("about:blank#retry");
+    callbacks.retry("about:blank#retry");
+
+    expect(load).toHaveBeenNthCalledWith(1, "data:text/html,offline");
+    expect(load).toHaveBeenNthCalledWith(2, "https://civcom.soia.info/");
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it("never hides an unavailable tray application and converts tray setup exceptions to false", () => {

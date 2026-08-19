@@ -23,7 +23,7 @@ describe("GitHub automation policy", () => {
     expect(verifier).not.toMatch(/require\(["']js-yaml["']\)|from ["']js-yaml["']/);
     expect(verifier).toContain("parseStrictYaml");
   });
-  it("accepts the checked-in least-privilege CI, pilot, release, and Dependabot configuration", async () => {
+  it("accepts exactly the checked-in least-privilege CI, live smoke, pilot, release, and Dependabot configuration", async () => {
     const { validateRepositoryAutomation } = await loadModule();
     await expect(validateRepositoryAutomation(new URL("..", import.meta.url).pathname)).resolves.toBeUndefined();
   });
@@ -31,13 +31,24 @@ describe("GitHub automation policy", () => {
   it("pins runner images, scopes checkout jobs to contents read, handles the p8 as a temporary file, and verifies attestations", async () => {
     const { validateRepositoryAutomation } = await loadModule();
     const root = new URL("..", import.meta.url);
-    const [ci, pilot, release] = await Promise.all([
+    const [ci, live, pilot, release] = await Promise.all([
       readFile(new URL(".github/workflows/ci.yml", root), "utf8"),
+      readFile(new URL(".github/workflows/anonymous-live-smoke.yml", root), "utf8"),
       readFile(new URL(".github/workflows/pilot.yml", root), "utf8"),
       readFile(new URL(".github/workflows/release.yml", root), "utf8")
     ]);
     await expect(validateRepositoryAutomation(root.pathname)).resolves.toBeUndefined();
-    expect(`${ci}\n${pilot}\n${release}`).not.toMatch(/windows-latest|ubuntu-latest/);
+    expect(`${ci}\n${live}\n${pilot}\n${release}`).not.toMatch(/windows-latest|ubuntu-latest/);
+    expect(ci).toContain("xvfb-run -a npm run test:electron:local");
+    expect(ci).not.toMatch(/test:live:anonymous|test:manual:production/);
+    expect(live).toContain("branches:\n      - main");
+    expect(live).toContain("github.event.repository.default_branch");
+    expect(live).toContain("CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE: confirmed");
+    expect(live).toContain("xvfb-run -a npm run test:live:anonymous");
+    expect(live).not.toMatch(/pull_request|workflow_run|schedule|secrets:|environment:|upload-artifact|trace|retry|https?:\/\//i);
+    const liveIndex = release.indexOf("xvfb-run -a npm run test:live:anonymous");
+    expect(liveIndex).toBeGreaterThan(release.indexOf("npm run verify"));
+    expect(liveIndex).toBeLessThan(release.indexOf("node scripts/release-preflight.mjs"));
     expect(pilot).toContain("windows-2025");
     expect(pilot).toContain("ubuntu-24.04");
     expect(release).toContain("CIVCOM_APPLE_API_KEY_CONTENT: ${{ secrets.CIVCOM_APPLE_API_KEY }}");
@@ -55,8 +66,18 @@ describe("GitHub automation policy", () => {
 
   it("rejects mutable actions, write-capable pilots, PR secrets, release publication in pilots, and non-draft-first production", async () => {
     const { validateWorkflowSource } = await loadModule();
+    const live = await readFile(new URL("../.github/workflows/anonymous-live-smoke.yml", import.meta.url), "utf8");
     const pilot = await readFile(new URL("../.github/workflows/pilot.yml", import.meta.url), "utf8");
     const release = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+    for (const hostile of [
+      live.replace("branches:\n      - main", "branches:\n      - feature"),
+      live.replace("workflow_dispatch:", "pull_request:"),
+      live.replace("permissions: {}", "permissions:\n  contents: write"),
+      live.replace("cancel-in-progress: false", "cancel-in-progress: true"),
+      live.replace("CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE: confirmed", "CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE: ${{ secrets.CONFIRM }}"),
+      live.replace("xvfb-run -a npm run test:live:anonymous", "npm run test:live:anonymous -- https://example.invalid"),
+      `${live}\n# actions/upload-artifact trace retry\n`
+    ]) expect(() => validateWorkflowSource("anonymous-live-smoke.yml", hostile)).toThrow();
     for (const hostile of [
       pilot.replace("name: Unsigned pilot packages", "name Unsigned pilot packages"),
       pilot.replace(/actions\/checkout@[0-9a-f]{40}/, "actions/checkout@v7"),
@@ -71,7 +92,9 @@ describe("GitHub automation policy", () => {
       release.replace("cancel-in-progress: false", "cancel-in-progress: true"),
       release.replace("environment: production-release", "environment: test"),
       release.replace("permissions: {}", "permissions:\n  contents: write"),
-      release.replace('test -s "$key_path"', ":")
+      release.replace('test -s "$key_path"', ":"),
+      release.replace("xvfb-run -a npm run test:live:anonymous", ":"),
+      release.replace("needs: preflight", "needs: assemble")
     ]) expect(() => validateWorkflowSource("release.yml", hostile)).toThrow();
   });
 });

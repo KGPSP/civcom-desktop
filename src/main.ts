@@ -2,7 +2,7 @@ import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, win32 } from "node:path";
-import { BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, escapeDesktopExecPath, isHiddenStart, makeLoginItemSettings, reserveDownloadDestination, resolveLinuxAutostartExecutable } from "./desktop/shell.js";
+import { BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, escapeDesktopExecPath, isHiddenStart, makeLoginItemSettings, OFFLINE_RETRY_URL, reserveDownloadDestination, resolveLinuxAutostartExecutable, resolveUnpackagedHarnessOptions, type UnpackagedHarnessOptions } from "./desktop/shell.js";
 import { createUpdateController, detectPackageType, loadVerifiedUpdater, LATEST_RELEASE_PAGE, type PackageType, type UpdateController } from "./desktop/updater.js";
 import { resolveVerifiedAppImageRuntime } from "./desktop/appimage-runtime.js";
 import { createPackagedSmokeResult, isPackagedSmokeRequested, packagedSmokeResultPath } from "./desktop/packaged-smoke.js";
@@ -48,6 +48,13 @@ function explicitDevelopmentUrl(): string | undefined {
 function resolvedStartUrl(): string | undefined {
   const decision = resolveStartUrl({ isPackaged: app.isPackaged, developmentUrl: explicitDevelopmentUrl() });
   return decision.kind === "allow" ? decision.url : undefined;
+}
+function unpackagedHarnessOptions(): UnpackagedHarnessOptions | undefined {
+  return resolveUnpackagedHarnessOptions({
+    isPackaged: app.isPackaged,
+    marker: process.env.CIVCOM_UNPACKAGED_HARNESS,
+    partition: process.env.CIVCOM_UNPACKAGED_HARNESS_PARTITION
+  });
 }
 function preferencesPath(): string { return join(app.getPath("userData"), "preferences.json"); }
 function boundsPath(): string { return join(app.getPath("userData"), "window-bounds.json"); }
@@ -119,8 +126,15 @@ function createTray(logger: RotatingSafeLogger): boolean {
   if (!available) logger.write({ event: "security-event", code: "UNCLASSIFIED" });
   return available;
 }
-function configureSession(logger: RotatingSafeLogger): Electron.Session {
-  const civcomSession = session.fromPartition("persist:civcom");
+function configureSession(logger: RotatingSafeLogger, harness?: UnpackagedHarnessOptions): Electron.Session {
+  const civcomSession = harness === undefined ? session.fromPartition("persist:civcom") : session.fromPartition(harness.partition);
+  civcomSession.setSSLConfig({ minVersion: "tls1.2", maxVersion: "tls1.3" });
+  if (harness !== undefined) {
+    civcomSession.setPermissionCheckHandler(() => false);
+    civcomSession.setPermissionRequestHandler((_contents, _name, callback) => callback(false));
+    civcomSession.setDevicePermissionHandler(() => false);
+    return civcomSession;
+  }
   const permission = createPermissionCallbacks();
   civcomSession.setPermissionCheckHandler((_contents, name, requestingOrigin, details) => permission.check(name, requestingOrigin, details));
   civcomSession.setPermissionRequestHandler((_contents, name, callback, details) => callback(permission.request(name, details)));
@@ -220,21 +234,29 @@ function configureDownloads(contents: Electron.WebContents, logger: RotatingSafe
     }).catch(() => { item.cancel(); logger.write({ event: "download-denied", code: "UNCLASSIFIED" }); });
   });
 }
-function createWindow(startUrl: string, logger: RotatingSafeLogger): BrowserWindow {
+function createWindow(startUrl: string, logger: RotatingSafeLogger, harness?: UnpackagedHarnessOptions): BrowserWindow {
   const bounds = new BoundsStore({ read: () => readOptional(boundsPath()), writeAtomic: (contents) => writeAtomic(boundsPath(), contents) });
   const displays = (): Electron.Rectangle[] => screen.getAllDisplays().map((display: Electron.Display) => display.workArea);
   const restored = bounds.load(displays());
-  const window = new BrowserWindow({ title: "CivCom", show: false, icon: join(app.getAppPath(), "assets", "civcom.png"), ...(restored === undefined ? {} : restored), webPreferences: createWebPreferences() });
+  const window = new BrowserWindow({ title: "CivCom", show: false, icon: join(app.getAppPath(), "assets", "civcom.png"), ...(restored === undefined ? {} : restored), webPreferences: createWebPreferences(harness?.partition) });
   const offlineUrl = createOfflinePageUrl("embedded");
   const callbacks = createWindowCallbacks({ startUrl, offlineUrl, load: (url) => { void window.loadURL(url); }, show: showMainWindow, hide: () => window.hide(), log: (event) => logger.write(event) });
   const navigation = createNavigationCallbacks({ offlineUrl, load: (url) => { void window.loadURL(url); }, openExternal: shell.openExternal, log: (event) => logger.write(event) });
   const loadStart = (): void => { void window.loadURL(startUrl); };
   window.webContents.setWindowOpenHandler(({ url }) => navigation.windowOpen(url));
-  const enforceNavigation = (event: Electron.Event, url: string): void => navigation.navigate(event, url);
+  const enforceNavigation = (event: Electron.Event, url: string): void => {
+    if (url === OFFLINE_RETRY_URL) {
+      event.preventDefault();
+      callbacks.retry(url);
+      return;
+    }
+    navigation.navigate(event, url);
+  };
   window.webContents.on("will-navigate", enforceNavigation);
   window.webContents.on("will-redirect", enforceNavigation);
   window.webContents.on("did-fail-load", (_event, errorCode, _description, url, mainFrame) => callbacks.failedLoad(errorCode, mainFrame, url));
-  window.webContents.on("did-navigate-in-page", (_event, url) => callbacks.retry(url));
+  window.webContents.on("did-navigate", (_event, url) => callbacks.retry(url));
+  window.webContents.on("did-navigate-in-page", (_event, url, isMainFrame) => { if (isMainFrame) callbacks.retry(url); });
   window.webContents.on("page-title-updated", (event) => window.setTitle(callbacks.pageTitle(event)));
   window.on("close", (event) => {
     if (quitting) return;
@@ -244,7 +266,8 @@ function createWindow(startUrl: string, logger: RotatingSafeLogger): BrowserWind
   window.on("close", () => bounds.save(window.getBounds(), displays()));
   configureDownloads(window.webContents, logger);
   window.once("ready-to-show", () => { logger.lifecycle("ready"); callbacks.ready(isHiddenStart(process.argv) || (process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin), trayAvailable); if (activationPending) { activationPending = false; showMainWindow(); } });
-  loadStart();
+  if (harness?.deferInitialNavigation === true) void window.loadURL("about:blank");
+  else loadStart();
   return window;
 }
 function createPackagedSmokeWindow(): BrowserWindow {
@@ -309,12 +332,16 @@ if (!app.requestSingleInstanceLock()) app.quit(); else {
     }
     const startUrl = resolvedStartUrl();
     if (startUrl === undefined) { app.quit(); return; }
+    const harness = unpackagedHarnessOptions();
     const logger = createLogger();
     const packageType = currentPackageType();
     lifecycleLogger = logger;
     logger.lifecycle("startup"); logger.lifecycle("version", app.getVersion());
-    configureSession(logger); updater = await configureUpdater(logger, packageType); createMenu(); trayAvailable = createTray(logger); mainWindow = createWindow(startUrl, logger);
-    await promptForAutostart(packageType);
+    configureSession(logger, harness); updater = await configureUpdater(logger, packageType);
+    if (harness === undefined) { createMenu(); trayAvailable = createTray(logger); }
+    else trayAvailable = false;
+    mainWindow = createWindow(startUrl, logger, harness);
+    if (harness === undefined) await promptForAutostart(packageType);
     await updater.start();
   });
 }

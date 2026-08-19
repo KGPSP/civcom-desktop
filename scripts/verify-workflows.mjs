@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictYaml } from "./strict-yaml.mjs";
@@ -64,7 +64,30 @@ function validateCi(workflow, source) {
   const triggers = record(workflow.on, "CI triggers missing");
   if (!Object.hasOwn(triggers, "push") || !Object.hasOwn(triggers, "pull_request") || /\$\{\{\s*secrets\./.test(source)) throw new Error("CI must be secret-free push and pull-request verification");
   const commands = commandText(workflow);
-  if (!commands.includes("npm ci") || !commands.includes("npm run verify") || !source.includes("node-version: 24")) throw new Error("CI verification contract missing");
+  if (!commands.includes("npm ci") || !commands.includes("npm run verify") || !commands.includes("xvfb-run -a npm run test:electron:local") || !source.includes("node-version: 24")) throw new Error("CI verification contract missing");
+  if (/test:live:anonymous|test:manual:production/.test(source)) throw new Error("CI must remain local-only");
+}
+
+function validateAnonymousLiveSmoke(workflow, source) {
+  validateTopLevel(workflow, source);
+  const triggers = record(workflow.on, "Anonymous live triggers missing");
+  if (Object.keys(triggers).sort().join(",") !== "push,workflow_dispatch") throw new Error("Anonymous live triggers are not exact");
+  const push = record(triggers.push, "Anonymous live push trigger missing");
+  if (!Array.isArray(push.branches) || push.branches.length !== 1 || push.branches[0] !== "main") throw new Error("Anonymous live push must target main only");
+  if (triggers.workflow_dispatch !== null) throw new Error("Anonymous live dispatch must not accept inputs");
+  const concurrency = record(workflow.concurrency, "Anonymous live concurrency missing");
+  if (concurrency.group !== "anonymous-production-smoke" || concurrency["cancel-in-progress"] !== false) throw new Error("Anonymous live concurrency is not fixed and non-cancelling");
+  const jobs = record(workflow.jobs, "Anonymous live job missing");
+  if (Object.keys(jobs).join(",") !== "smoke") throw new Error("Anonymous live must be one serial job");
+  const smoke = record(jobs.smoke, "Anonymous live smoke job missing");
+  if (smoke.if !== "github.event_name != 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch") throw new Error("Manual live dispatch must stay on the default branch");
+  if (smoke["runs-on"] !== "ubuntu-24.04" || !Number.isInteger(smoke["timeout-minutes"]) || smoke["timeout-minutes"] < 1 || smoke["timeout-minutes"] > 20) throw new Error("Anonymous live runner or timeout invalid");
+  if (smoke.environment !== undefined || smoke.strategy !== undefined || smoke["continue-on-error"] !== undefined) throw new Error("Anonymous live job may not use a release environment, matrix, or soft failure");
+  const environment = record(smoke.env, "Anonymous live opt-in missing");
+  if (Object.keys(environment).join(",") !== "CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE" || environment.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE !== "confirmed") throw new Error("Anonymous live opt-in must be constant");
+  const commands = steps({ jobs: { smoke } }).map((step) => step.run).filter((command) => typeof command === "string");
+  if (commands.length !== 2 || commands[0] !== "npm ci" || commands[1] !== "xvfb-run -a npm run test:live:anonymous" || !source.includes("node-version: 24")) throw new Error("Anonymous live command contract missing");
+  if (/pull_request|workflow_run|schedule|secrets\s*:|\$\{\{\s*secrets\.|secrets:\s*inherit|environment\s*:|upload-artifact|download-artifact|GITHUB_STEP_SUMMARY|\btrace\b|\bhar\b|\bretr(?:y|ies)\b|https?:\/\//i.test(source)) throw new Error("Anonymous live trust boundary widened");
 }
 
 function validatePilot(workflow, source) {
@@ -99,6 +122,12 @@ function validateRelease(workflow, source) {
   }
   if (permissionKeys(record(jobs.attest, "Attestation job missing").permissions).join(",") !== "artifact-metadata,attestations,contents,id-token") throw new Error("Attestation permissions are not exact");
   if (permissionKeys(record(jobs.publish, "Publication job missing").permissions).join(",") !== "contents") throw new Error("Publication permissions are not exact");
+  const preflight = record(jobs.preflight, "Release preflight missing");
+  const preflightCommands = steps({ jobs: { preflight } }).map((step) => step.run).filter((command) => typeof command === "string");
+  if (preflightCommands.join("\n") !== ["npm ci", "npm run verify", "xvfb-run -a npm run test:live:anonymous", "node scripts/release-preflight.mjs"].join("\n")) throw new Error("Release live preflight sequence missing");
+  const preflightEnvironment = record(preflight.env, "Release preflight environment missing");
+  if (preflightEnvironment.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE !== "confirmed" || /\$\{\{\s*secrets\./.test(JSON.stringify(preflight))) throw new Error("Release preflight live smoke must be constant and secret-free");
+  for (const name of ["build-windows", "build-macos", "build-linux"]) if (record(jobs[name], `Release build missing: ${name}`).needs !== "preflight") throw new Error(`Release build does not depend on live preflight: ${name}`);
   const publishPermissions = record(record(jobs.publish, "Publication job missing").permissions, "Publication permissions missing");
   if (publishPermissions.contents !== "write") throw new Error("Final publication job requires contents write");
   const publication = commandText({ jobs: { publish: jobs.publish } });
@@ -120,6 +149,7 @@ export function validateWorkflowSource(name, source) {
   let workflow;
   try { workflow = record(parseStrictYaml(source), "Workflow YAML root must be an object"); } catch { throw new Error("Invalid workflow YAML"); }
   if (name === "ci.yml") validateCi(workflow, source);
+  else if (name === "anonymous-live-smoke.yml") validateAnonymousLiveSmoke(workflow, source);
   else if (name === "pilot.yml") validatePilot(workflow, source);
   else if (name === "release.yml") validateRelease(workflow, source);
   else throw new Error("Unexpected workflow filename");
@@ -137,7 +167,13 @@ function validateDependabot(source) {
 }
 
 export async function validateRepositoryAutomation(rootDirectory) {
-  for (const name of ["ci.yml", "pilot.yml", "release.yml"]) {
+  const expectedWorkflows = ["anonymous-live-smoke.yml", "ci.yml", "pilot.yml", "release.yml"];
+  const actualWorkflows = (await readdir(join(rootDirectory, ".github", "workflows"), { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+  if (actualWorkflows.join("\n") !== expectedWorkflows.join("\n")) throw new Error("Unexpected workflow file set");
+  for (const name of expectedWorkflows) {
     validateWorkflowSource(name, await readFile(join(rootDirectory, ".github", "workflows", name), "utf8"));
   }
   validateDependabot(await readFile(join(rootDirectory, ".github", "dependabot.yml"), "utf8"));

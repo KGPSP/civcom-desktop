@@ -19,6 +19,7 @@ jobs:
       contents: read
     env:
       CIVCOM_BUILD_MODE: production
+      CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE: confirmed
     steps:
       - name: Checkout exact tagged revision
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -32,6 +33,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
+      - run: xvfb-run -a npm run test:live:anonymous
       - run: node scripts/release-preflight.mjs
 
   build-windows:

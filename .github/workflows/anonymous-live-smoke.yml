@@ -1,16 +1,26 @@
-name: CI
+name: Anonymous production smoke
 
 on:
   push:
-  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions: {}
 
+concurrency:
+  group: anonymous-production-smoke
+  cancel-in-progress: false
+
 jobs:
-  verify:
+  smoke:
+    if: github.event_name != 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
+    env:
+      CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE: confirmed
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -22,5 +32,4 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run verify
-      - run: xvfb-run -a npm run test:electron:local
+      - run: xvfb-run -a npm run test:live:anonymous

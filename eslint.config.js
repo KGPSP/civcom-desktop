@@ -14,16 +14,16 @@ export default tseslint.config(
   js.configs.recommended,
   tseslint.configs.recommended,
   {
-    files: ["scripts/**/*.mjs"],
+    files: ["scripts/**/*.mjs", "test/support/**/*.mjs"],
     languageOptions: {
-      globals: { Buffer: "readonly", URL: "readonly", process: "readonly" }
+      globals: { Buffer: "readonly", URL: "readonly", clearTimeout: "readonly", process: "readonly", setTimeout: "readonly" }
     }
   },
   {
-    files: ["electron-builder.config.cjs"],
+    files: ["electron-builder.config.cjs", "test/support/**/*.cjs"],
     languageOptions: {
       sourceType: "commonjs",
-      globals: { module: "readonly", process: "readonly", require: "readonly" }
+      globals: { URL: "readonly", __dirname: "readonly", clearTimeout: "readonly", module: "readonly", process: "readonly", require: "readonly", setTimeout: "readonly" }
     },
     rules: { "@typescript-eslint/no-require-imports": "off" }
   },

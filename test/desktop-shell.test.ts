@@ -14,6 +14,7 @@ import {
   resolveLinuxAutostartExecutable,
   escapeDesktopExecPath,
   resolveDownloadDestination,
+  resolveUnpackagedHarnessOptions,
   sanitizeDownloadBasename,
   type BoundsFile,
   type DisplayArea
@@ -34,6 +35,34 @@ describe("desktop shell policy", () => {
     });
     expect("preload" in preferences).toBe(false);
     expect("userAgent" in preferences).toBe(false);
+  });
+
+  it("reuses the exact secure preference factory for a bounded memory-only test partition", () => {
+    const preferences = createWebPreferences("civcom-anonymous-000102030405060708090a0b0c0d0e0f");
+    expect(preferences).toMatchObject({
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      webviewTag: false,
+      backgroundThrottling: false,
+      partition: "civcom-anonymous-000102030405060708090a0b0c0d0e0f"
+    });
+    expect("preload" in preferences).toBe(false);
+    expect(() => createWebPreferences("persist:anonymous")).toThrowError("invalid-renderer-partition");
+    expect(() => createWebPreferences("civcom-anonymous-short")).toThrowError("invalid-renderer-partition");
+  });
+
+  it("enables the local wiring seam only for the exact unpackaged marker and memory partition", () => {
+    const partition = "civcom-local-000102030405060708090a0b0c0d0e0f";
+    expect(resolveUnpackagedHarnessOptions({ isPackaged: false, marker: "local-v1", partition })).toEqual({ partition, deferInitialNavigation: true });
+    for (const input of [
+      { isPackaged: true, marker: "local-v1", partition },
+      { isPackaged: false, marker: "local", partition },
+      { isPackaged: false, marker: "local-v1", partition: "persist:civcom" },
+      { isPackaged: false, marker: "local-v1", partition: "civcom-anonymous-000102030405060708090a0b0c0d0e0f" },
+      new Proxy({}, { getOwnPropertyDescriptor: () => { throw new Error("trap"); } })
+    ]) expect(resolveUnpackagedHarnessOptions(input)).toBeUndefined();
   });
 
   it("only permits CivCom/Auth navigation and safe external window targets", () => {
@@ -113,7 +142,7 @@ describe("desktop shell policy", () => {
     const offlineUrl = createOfflinePageUrl("/Application/CivCom/offline.html");
     expect(offlineUrl.startsWith("data:text/html;charset=utf-8,")).toBe(true);
     const html = decodeURIComponent(offlineUrl.slice("data:text/html;charset=utf-8,".length));
-    expect(html).toContain('href="#retry"');
+    expect(html).toContain('href="about:blank#retry"');
     expect(html).toContain("default-src 'none'");
     expect(html).not.toMatch(/<script|<link|<img|https?:|file:/i);
     expect(PRODUCTION_CIVCOM_URL).toBe("https://civcom.soia.info/");

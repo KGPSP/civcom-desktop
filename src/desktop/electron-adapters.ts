@@ -1,5 +1,5 @@
 import { authorizeExternalProtocol, authorizePermissionRequest, authorizeTopLevelNavigation, classifyTrustedOrigin } from "../security/url-policy.js";
-import { sanitizeDownloadBasename } from "./shell.js";
+import { OFFLINE_RETRY_URL, sanitizeDownloadBasename } from "./shell.js";
 
 type SafeLog = (event: unknown) => void;
 
@@ -133,7 +133,12 @@ export function createWindowCallbacks(dependencies: Readonly<{
       dependencies.log({ event: "load-failed", code: "ERR_FAILED" });
       dependencies.load(dependencies.offlineUrl);
     },
-    retry(url): void { if (url === `${dependencies.offlineUrl}#retry`) { offlineFailed = false; dependencies.load(dependencies.startUrl); } },
+    retry(url): void {
+      if (offlineFailed && url === OFFLINE_RETRY_URL) {
+        offlineFailed = false;
+        dependencies.load(dependencies.startUrl);
+      }
+    },
     pageTitle(event): "CivCom" { event.preventDefault(); return "CivCom"; },
     activate(): void { activationPending = true; },
     ready(hiddenStart, trayAvailable): void { if (activationPending || !hiddenStart || !trayAvailable) dependencies.show(); activationPending = false; },

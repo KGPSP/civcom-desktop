@@ -34,6 +34,11 @@ const TRUSTED_ORIGINS: Readonly<Record<string, TrustedService>> = Object.freeze(
   "https://matrix.soia.info": "matrix",
   "https://call.soia.info": "call"
 });
+const TRUSTED_HOSTS = Object.freeze(["civcom.soia.info", "auth.soia.info", "matrix.soia.info", "call.soia.info"]);
+
+function isTrustedHostnameLookalike(hostname: string): boolean {
+  return TRUSTED_HOSTS.some((trusted) => hostname !== trusted && (hostname.startsWith(`${trusted}.`) || hostname.endsWith(`.${trusted}`)));
+}
 
 function hasUnsafeRawUrlCharacters(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
@@ -245,7 +250,7 @@ export function authorizeExternalProtocol(value: unknown): ExternalProtocolResul
   }
   try {
     const url = new URL(value);
-    if (url.protocol === "https:" && url.username === "" && url.password === "") {
+    if (url.protocol === "https:" && url.username === "" && url.password === "" && !isTrustedHostnameLookalike(url.hostname)) {
       return Object.freeze({ kind: "allow", protocol: "https:" });
     }
     if (url.protocol === "mailto:" && !hasUnsafeMailtoEncoding(value)) {

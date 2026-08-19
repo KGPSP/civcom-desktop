@@ -7,6 +7,7 @@ import { isAbsolute } from "node:path";
 
 export const APP_START_HIDDEN_ARG = "--hidden";
 export const CIVCOM_PARTITION = "persist:civcom";
+export const OFFLINE_RETRY_URL = "about:blank#retry";
 
 export type WebPreferences = Readonly<{
   nodeIntegration: false;
@@ -15,11 +16,34 @@ export type WebPreferences = Readonly<{
   webSecurity: true;
   webviewTag: false;
   backgroundThrottling: false;
-  partition: typeof CIVCOM_PARTITION;
+  partition: string;
 }>;
 
+export type UnpackagedHarnessOptions = Readonly<{
+  partition: string;
+  deferInitialNavigation: true;
+}>;
+
+export function resolveUnpackagedHarnessOptions(input: unknown): UnpackagedHarnessOptions | undefined {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  try {
+    if (Object.getPrototypeOf(input) !== Object.prototype) return undefined;
+    const values = input as Record<string, unknown>;
+    const descriptors = ["isPackaged", "marker", "partition"].map((key) => Object.getOwnPropertyDescriptor(values, key));
+    if (descriptors.some((descriptor) => descriptor === undefined || !("value" in descriptor))) return undefined;
+    const [packaged, marker, partition] = descriptors.map((descriptor) => (descriptor as PropertyDescriptor & { value: unknown }).value);
+    if (packaged !== false || marker !== "local-v1" || typeof partition !== "string" || !/^civcom-local-[0-9a-f]{32}$/.test(partition)) return undefined;
+    return Object.freeze({ partition, deferInitialNavigation: true });
+  } catch {
+    return undefined;
+  }
+}
+
 /** Deliberately contains neither `preload` nor a user-agent override. */
-export function createWebPreferences(): WebPreferences {
+export function createWebPreferences(partition: string = CIVCOM_PARTITION): WebPreferences {
+  if (partition !== CIVCOM_PARTITION && !/^civcom-(?:anonymous|local)-[0-9a-f]{32}$/.test(partition)) {
+    throw new Error("invalid-renderer-partition");
+  }
   return Object.freeze({
     nodeIntegration: false,
     contextIsolation: true,
@@ -27,7 +51,7 @@ export function createWebPreferences(): WebPreferences {
     webSecurity: true,
     webviewTag: false,
     backgroundThrottling: false,
-    partition: CIVCOM_PARTITION
+    partition
   });
 }
 
@@ -36,7 +60,7 @@ export type WindowOpenResult = Readonly<{ action: "external" | "deny" }>;
 
 export function createOfflinePageUrl(filePath: string): string {
   if (typeof filePath !== "string") throw new Error("invalid-offline-page-request");
-  const html = "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'none'; script-src 'none'; img-src 'none'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; manifest-src 'none'; frame-ancestors 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>CivCom — brak połączenia</title></head><body><main><h1>Brak połączenia z CivCom</h1><p>Nie udało się wczytać usługi. Sprawdź połączenie z internetem i spróbuj ponownie.</p><a id=\"retry\" href=\"#retry\">Spróbuj ponownie</a></main></body></html>";
+  const html = `<!doctype html><html lang="pl"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'none'; script-src 'none'; img-src 'none'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; manifest-src 'none'; frame-ancestors 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CivCom — brak połączenia</title></head><body><main><h1>Brak połączenia z CivCom</h1><p>Nie udało się wczytać usługi. Sprawdź połączenie z internetem i spróbuj ponownie.</p><a id="retry" href="${OFFLINE_RETRY_URL}">Spróbuj ponownie</a></main></body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 

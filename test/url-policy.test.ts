@@ -165,7 +165,7 @@ describe("navigation protocol policy", () => {
     ]) {
       expect(policy.authorizeExternalProtocol(url)).toEqual({ kind: "allow", protocol: "mailto:" });
     }
-    for (const url of ["http://example.org/", "javascript:alert(1)", "file:///tmp/a", "matrix:r/example"]) {
+    for (const url of ["http://example.org/", "javascript:alert(1)", "file:///tmp/a", "matrix:r/example", "https://civcom.soia.info.evil.invalid/", "https://evil.civcom.soia.info/"]) {
       expect(policy.authorizeExternalProtocol(url)).toEqual({
         kind: "deny",
         code: "unsafe-protocol"
