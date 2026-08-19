@@ -1,0 +1,14 @@
+.cred.env
+.cred.env.*
+!.cred.env.example
+.DS_Store
+.superpowers/
+node_modules/
+dist/
+release/
+out/
+coverage/
+playwright-report/
+test-results/
+*.log
+
