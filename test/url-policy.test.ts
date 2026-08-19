@@ -30,12 +30,12 @@ type DisplayMediaDecision =
 
 type UrlPolicy = Readonly<{
   PRODUCTION_CIVCOM_URL: string;
-  resolveStartUrl(input: Readonly<{ isPackaged: boolean; developmentUrl?: string }>): StartUrlResult;
-  classifyTrustedOrigin(url: string): OriginResult;
-  authorizeTopLevelNavigation(url: string): NavigationResult;
-  authorizeExternalProtocol(url: string): ExternalProtocolResult;
-  authorizePermissionRequest(input: Readonly<{ origin: string; permission: string }>): PermissionDecision;
-  authorizeDisplayMediaRequest(input: Readonly<{ origin: string; userGesture: unknown }>): DisplayMediaDecision;
+  resolveStartUrl(input: unknown): StartUrlResult;
+  classifyTrustedOrigin(url: unknown): OriginResult;
+  authorizeTopLevelNavigation(url: unknown): NavigationResult;
+  authorizeExternalProtocol(url: unknown): ExternalProtocolResult;
+  authorizePermissionRequest(input: unknown): PermissionDecision;
+  authorizeDisplayMediaRequest(input: unknown): DisplayMediaDecision;
 }>;
 
 const policy = urlPolicy as unknown as UrlPolicy;
@@ -172,10 +172,133 @@ describe("navigation protocol policy", () => {
       "https://example.org\\path",
       "mailto:service@example.org\r\nBcc:attacker@example.org",
       "mailto:service@example.org%0d%0aBcc:attacker@example.org",
-      "mailto:service@example.org%00"
+      "mailto:service@example.org%00",
+      "mailto:service@example.org%250d%250aBcc:attacker@example.org",
+      "mailto:service@example.org%25250Abcc:attacker@example.org",
+      "mailto:service@example.org%25250aBcc:attacker@example.org",
+      "mailto:service@example.org%255cBcc:attacker@example.org",
+      "mailto:service@example.org%2",
+      "mailto:service@example.org%25zz"
     ]) {
       expect(policy.authorizeExternalProtocol(url)).toEqual({ kind: "deny", code: "unsafe-protocol" });
     }
+  });
+});
+
+describe("total policy boundaries", () => {
+  test("fails closed for malformed start-url records without invoking getters or proxy traps", () => {
+    let getterReads = 0;
+    const accessor = Object.defineProperty({}, "isPackaged", {
+      get() {
+        getterReads += 1;
+        return true;
+      }
+    });
+    const hostileProxy = new Proxy({}, {
+      getOwnPropertyDescriptor() {
+        throw new Error("start-url descriptor trap");
+      }
+    });
+    const prototypeTrapProxy = new Proxy({}, {
+      getPrototypeOf() {
+        throw new Error("start-url prototype trap");
+      }
+    });
+    let developmentGetterReads = 0;
+    const developmentAccessor = Object.defineProperties({}, {
+      isPackaged: { value: false },
+      developmentUrl: {
+        get() {
+          developmentGetterReads += 1;
+          return "http://127.0.0.1:4173/";
+        }
+      }
+    });
+
+    for (const input of [
+      null,
+      undefined,
+      "true",
+      1,
+      [],
+      accessor,
+      developmentAccessor,
+      Object.freeze({ isPackaged: "true" }),
+      Object.create({ isPackaged: true }),
+      prototypeTrapProxy,
+      hostileProxy
+    ]) {
+      expect(() => policy.resolveStartUrl(input)).not.toThrow();
+      expect(policy.resolveStartUrl(input)).toEqual({ kind: "deny", code: "invalid-development-url" });
+    }
+    expect(getterReads).toBe(0);
+    expect(developmentGetterReads).toBe(0);
+    expect(policy.resolveStartUrl(Object.freeze({ isPackaged: true }))).toEqual({
+      kind: "allow",
+      source: "production",
+      url: "https://civcom.soia.info/"
+    });
+  });
+
+  test("fails closed for non-string navigation and external URL inputs", () => {
+    const hostileProxy = new Proxy({}, {
+      get() {
+        throw new Error("URL coercion must not run");
+      }
+    });
+    let getterReads = 0;
+    const accessor = Object.defineProperty({}, "toString", {
+      get() {
+        getterReads += 1;
+        throw new Error("URL getter must not run");
+      }
+    });
+    for (const value of [null, undefined, 1, [], {}, accessor, hostileProxy]) {
+      expect(() => policy.classifyTrustedOrigin(value)).not.toThrow();
+      expect(policy.classifyTrustedOrigin(value)).toEqual({ kind: "untrusted", code: "invalid-url" });
+      expect(() => policy.authorizeTopLevelNavigation(value)).not.toThrow();
+      expect(policy.authorizeTopLevelNavigation(value)).toEqual({ kind: "deny", code: "invalid-url" });
+      expect(() => policy.authorizeExternalProtocol(value)).not.toThrow();
+      expect(policy.authorizeExternalProtocol(value)).toEqual({ kind: "deny", code: "invalid-url" });
+    }
+    expect(getterReads).toBe(0);
+  });
+
+  test("reads only own data descriptors for permission and display-media records", () => {
+    let getterReads = 0;
+    const accessor = Object.defineProperties({}, {
+      origin: {
+        get() {
+          getterReads += 1;
+          return "https://civcom.soia.info/";
+        }
+      },
+      permission: { value: "media" },
+      userGesture: { value: true }
+    });
+    const inherited = Object.create({
+      origin: "https://civcom.soia.info/",
+      permission: "media",
+      userGesture: true
+    });
+    const hostileProxy = new Proxy({}, {
+      getOwnPropertyDescriptor() {
+        throw new Error("permission descriptor trap");
+      }
+    });
+
+    for (const input of [null, undefined, "record", 1, [], accessor, inherited, hostileProxy]) {
+      expect(() => policy.authorizePermissionRequest(input)).not.toThrow();
+      expect(policy.authorizePermissionRequest(input)).toEqual({ kind: "deny", code: "untrusted-origin" });
+      expect(() => policy.authorizeDisplayMediaRequest(input)).not.toThrow();
+      expect(policy.authorizeDisplayMediaRequest(input)).toEqual({ kind: "deny", code: "untrusted-origin" });
+    }
+    expect(getterReads).toBe(0);
+    expect(policy.authorizePermissionRequest({ origin: "https://civcom.soia.info/", permission: "media" })).toEqual({
+      kind: "allow",
+      permission: "media"
+    });
+    expect(policy.authorizeDisplayMediaRequest({ origin: "https://civcom.soia.info/", userGesture: true })).toEqual({ kind: "allow" });
   });
 });
 
