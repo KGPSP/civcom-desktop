@@ -5,6 +5,9 @@ import { basename, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { navigateCredentialRoute, readFixedManualCredentialFile } from "./manual/credential-file.mjs";
+import environmentPolicy from "../test/support/electron-environment.cjs";
+
+const { copySafeElectronEnvironment } = environmentPolicy;
 
 const FIXED_CREDENTIAL_PATH = fileURLToPath(new URL("../.cred.env", import.meta.url));
 const MANUAL_BOOTSTRAP_PATH = fileURLToPath(new URL("../test/support/electron-manual-bootstrap.cjs", import.meta.url));
@@ -93,11 +96,8 @@ function removeVerifiedManualProfile(profile) {
 }
 
 function safeEnvironment(profile) {
-  const environment = { CIVCOM_MANUAL_PROFILE_ROOT: profile };
-  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]) {
-    const value = process.env[key];
-    if (typeof value === "string") environment[key] = value;
-  }
+  const environment = copySafeElectronEnvironment(process.env);
+  environment.CIVCOM_MANUAL_PROFILE_ROOT = profile;
   return environment;
 }
 

@@ -6,12 +6,11 @@ const { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync } = require("nod
 const { tmpdir } = require("node:os");
 const { basename, join, resolve, sep } = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { scrubSensitiveElectronEnvironment } = require("./electron-environment.cjs");
 
 const PRODUCTION_URL = "https://civcom.soia.info/";
 const optInConfirmed = process.env.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE === "confirmed";
-for (const key of Object.keys(process.env)) {
-  if (/^(?:CI|GITHUB_|ACTIONS_|NODE_|NPM_|npm_|DEBUG|PWDEBUG|ELECTRON_|CIVCOM_|.*(?:TOKEN|SECRET|PASSWORD|PASS|COOKIE|AUTH|PROXY).*)$/i.test(key)) delete process.env[key];
-}
+scrubSensitiveElectronEnvironment(process.env);
 
 if (!optInConfirmed) {
   app.exit(2);

@@ -6,6 +6,7 @@ const { chmodSync, mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync } =
 const { tmpdir } = require("node:os");
 const { basename, join, resolve, sep } = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { scrubSensitiveElectronEnvironment } = require("./electron-environment.cjs");
 
 function exactLoopbackOrigin(value, protocols) {
   if (typeof value !== "string" || value.length > 256 || /[\s\\]/.test(value)) return undefined;
@@ -21,9 +22,7 @@ function exactLoopbackOrigin(value, protocols) {
 
 const startOrigin = exactLoopbackOrigin(process.env.CIVCOM_LOCAL_HARNESS_ORIGIN, ["http:"]);
 const tlsOrigin = exactLoopbackOrigin(process.env.CIVCOM_LOCAL_HARNESS_TLS_ORIGIN, ["https:"]);
-for (const key of Object.keys(process.env)) {
-  if (/^(?:CI|GITHUB_|ACTIONS_|NODE_|NPM_|npm_|DEBUG|PWDEBUG|ELECTRON_|CIVCOM_|.*(?:TOKEN|SECRET|PASSWORD|PASS|COOKIE|AUTH|PROXY).*)$/i.test(key)) delete process.env[key];
-}
+scrubSensitiveElectronEnvironment(process.env);
 
 if (startOrigin === undefined || tlsOrigin === undefined) {
   app.exit(2);

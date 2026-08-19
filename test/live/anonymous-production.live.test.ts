@@ -1,7 +1,12 @@
 import { _electron as electron, type ElectronApplication } from "playwright";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAnonymousEndpointProbe } from "../support/anonymous-endpoint-probe.mjs";
 
+const require = createRequire(import.meta.url);
+const { copySafeElectronEnvironment } = require("../support/electron-environment.cjs") as Readonly<{
+  copySafeElectronEnvironment(source: object): Record<string, string>;
+}>;
 const bootstrap = new URL("../support/electron-anonymous-bootstrap.cjs", import.meta.url).pathname;
 
 type AnonymousSnapshot = Readonly<{
@@ -24,13 +29,8 @@ type AnonymousSnapshot = Readonly<{
 let runningApp: ElectronApplication | undefined;
 
 function safeEnvironment(): Record<string, string> {
-  const environment: Record<string, string> = {
-    CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE: process.env.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE ?? ""
-  };
-  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] as const) {
-    const value = process.env[key];
-    if (value !== undefined) environment[key] = value;
-  }
+  const environment = copySafeElectronEnvironment(process.env);
+  environment.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE = process.env.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE ?? "";
   return environment;
 }
 

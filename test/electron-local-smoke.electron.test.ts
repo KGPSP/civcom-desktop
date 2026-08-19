@@ -1,7 +1,12 @@
 import { _electron as electron, type ElectronApplication, type Page } from "playwright";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import { createLoopbackFixture, createSelfSignedLoopbackFixture, type TrafficPath } from "./support/loopback-server.js";
 
+const require = createRequire(import.meta.url);
+const { copySafeElectronEnvironment } = require("./support/electron-environment.cjs") as Readonly<{
+  copySafeElectronEnvironment(source: object): Record<string, string>;
+}>;
 const bootstrap = new URL("./support/electron-local-bootstrap.cjs", import.meta.url).pathname;
 
 type LocalSnapshot = Readonly<{
@@ -19,11 +24,8 @@ type LocalSnapshot = Readonly<{
 let runningApp: ElectronApplication | undefined;
 
 async function launch(origin: string, tlsOrigin?: string): Promise<Readonly<{ app: ElectronApplication; page: Page }>> {
-  const environment: Record<string, string> = { CIVCOM_LOCAL_HARNESS_ORIGIN: origin };
-  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] as const) {
-    const value = process.env[key];
-    if (value !== undefined) environment[key] = value;
-  }
+  const environment = copySafeElectronEnvironment(process.env);
+  environment.CIVCOM_LOCAL_HARNESS_ORIGIN = origin;
   if (tlsOrigin !== undefined) environment.CIVCOM_LOCAL_HARNESS_TLS_ORIGIN = tlsOrigin;
   const app = await electron.launch({ args: [bootstrap], chromiumSandbox: true, acceptDownloads: false, ignoreHTTPSErrors: false, env: environment, timeout: 30_000 });
   runningApp = app;

@@ -5,11 +5,10 @@ const { chmodSync, mkdirSync, realpathSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { basename, join, resolve, sep } = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { scrubSensitiveElectronEnvironment } = require("./electron-environment.cjs");
 
 const profileInput = process.env.CIVCOM_MANUAL_PROFILE_ROOT;
-for (const key of Object.keys(process.env)) {
-  if (/^(?:CI|GITHUB_|ACTIONS_|NODE_|NPM_|npm_|DEBUG|PWDEBUG|ELECTRON_|CIVCOM_|.*(?:TOKEN|SECRET|PASSWORD|PASS|COOKIE|AUTH|PROXY).*)$/i.test(key)) delete process.env[key];
-}
+scrubSensitiveElectronEnvironment(process.env);
 
 let profile;
 try {
