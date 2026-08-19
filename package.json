@@ -25,7 +25,7 @@
   },
   "scripts": {
     "assets:check": "node scripts/verify-assets.mjs",
-    "build": "npm run assets:check && tsc --project tsconfig.build.json",
+    "build": "npm run assets:check && tsc --project tsconfig.build.json && node scripts/copy-runtime-assets.mjs",
     "dev": "npm run build && electron .",
     "lint": "eslint .",
     "postinstall": "npm run verify:electron",
