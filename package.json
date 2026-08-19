@@ -1,0 +1,48 @@
+{
+  "name": "civcom-desktop",
+  "version": "0.1.0",
+  "description": "Thin, hardened CivCom desktop client.",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "productName": "CivCom",
+  "license": "EUPL-1.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KGPSP/civcom-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KGPSP/civcom-desktop/issues"
+  },
+  "homepage": "https://github.com/KGPSP/civcom-desktop#readme",
+  "build": {
+    "appId": "info.soia.civcom.desktop",
+    "productName": "CivCom"
+  },
+  "scripts": {
+    "assets:check": "node scripts/verify-assets.mjs",
+    "build": "npm run assets:check && tsc --project tsconfig.build.json",
+    "dev": "npm run build && electron .",
+    "lint": "eslint .",
+    "postinstall": "npm run verify:electron",
+    "start": "electron .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "verify:electron": "electron --version && node scripts/verify-electron-binary.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.2.0",
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3",
+    "eslint": "10.8.1",
+    "playwright": "1.62.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  }
+}
