@@ -1,6 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
-  <title id="title">CivCom</title>
-  <rect width="256" height="256" rx="48" fill="#003b70"/>
-  <path fill="#fff" d="M128 48a80 80 0 1 0 80 80h-28a52 52 0 1 1-52-52V48Z"/>
-  <path fill="#e6002d" d="M128 48v80h80A80 80 0 0 0 128 48Z"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Znak CivCom"><circle cx="60" cy="60" r="56" fill="#F08A00"/><path d="M60 31 L93 87 L27 87 Z" fill="#1D5FAE" stroke="#1D5FAE" stroke-width="11" stroke-linejoin="round"/><g fill="none" stroke="#FFFFFF" stroke-width="5.5" stroke-linecap="round"><path d="M51.5 67.5 A12 12 0 0 1 68.5 67.5"/><path d="M45.9 61.9 A20 20 0 0 1 74.1 61.9"/></g><circle cx="60" cy="76" r="5.5" fill="#FFFFFF"/></svg>

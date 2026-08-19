@@ -6,6 +6,10 @@
   "type": "module",
   "main": "dist/main.js",
   "productName": "CivCom",
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11"
+  },
   "license": "EUPL-1.2",
   "repository": {
     "type": "git",
@@ -33,7 +37,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@types/node": "26.2.0",
+    "@types/node": "24.13.3",
     "electron": "43.4.1",
     "electron-builder": "26.15.3",
     "eslint": "10.8.1",

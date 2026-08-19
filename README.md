@@ -4,7 +4,7 @@ Thin Electron client for [CivCom](https://civcom.soia.info/). The remote CivCom 
 
 ## Development
 
-Requires Node.js 22.12 or newer and npm. Install the locked dependencies, then use:
+Requires Node.js 24 LTS and npm 11 or newer. Install the locked dependencies, then use:
 
 ```sh
 npm ci
@@ -15,6 +15,10 @@ npm run build
 ```
 
 The foundation pins Electron `43.4.1`, electron-builder `26.15.3`, and electron-updater `6.8.9`. Packaging and Electron lifecycle behavior are intentionally deferred to later tasks.
+
+## Asset provenance
+
+`assets/civcom.svg` is the vendored CivCom mark copied from `https://civcom.soia.info/znak.svg`. The build never fetches it: it validates the checked-in local file and rejects active SVG content, external resources, and symbolic links.
 
 ## Local test credentials
 
