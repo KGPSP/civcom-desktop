@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createWindowCallbacks } from "../src/desktop/electron-adapters.js";
+import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createTraySafely, createWindowCallbacks } from "../src/desktop/electron-adapters.js";
 
 describe("Electron callback adapters", () => {
   it("uses frame origins for both permission callback forms and fails closed", () => {
@@ -9,6 +9,11 @@ describe("Electron callback adapters", () => {
     expect(handlers.check("notifications", { requestingUrl: "https://matrix.soia.info/" })).toBe(false);
     expect(handlers.request("media", { requestingUrl: "https://call.soia.info/", mediaTypes: ["video"] })).toBe(true);
     expect(handlers.request("media", { mediaTypes: ["audio"] })).toBe(false);
+    expect(handlers.check("media", { securityOrigin: "https://call.soia.info", requestingUrl: "https://call.soia.info/conference/42", mediaType: "audio" })).toBe(true);
+    expect(handlers.request("media", { securityOrigin: "https://call.soia.info", requestingOrigin: "https://civcom.soia.info/", mediaTypes: ["video"] })).toBe(false);
+    expect(handlers.request("media", { securityOrigin: "https://call.soia.info/?x=1", mediaTypes: ["video"] })).toBe(true);
+    expect(handlers.request("media", { securityOrigin: "https://call.soia.info.evil/", mediaTypes: ["video"] })).toBe(false);
+    expect(handlers.check("media", new Proxy({}, { getOwnPropertyDescriptor: () => { throw new Error("trap"); } }))).toBe(false);
   });
 
   it("keeps internal popup navigation in the existing window and opens only safe externals", async () => {
@@ -34,7 +39,8 @@ describe("Electron callback adapters", () => {
   it("fuses offline failures, fixes title and flushes a pending activation", () => {
     const load = vi.fn();
     const show = vi.fn();
-    const callbacks = createWindowCallbacks({ startUrl: "https://civcom.soia.info/", offlineUrl: "file:///tmp/offline.html", load, show, log: vi.fn() });
+    const hide = vi.fn();
+    const callbacks = createWindowCallbacks({ startUrl: "https://civcom.soia.info/", offlineUrl: "file:///tmp/offline.html", load, show, hide, log: vi.fn() });
     callbacks.failedLoad(-2, true, "https://civcom.soia.info/");
     callbacks.failedLoad(-2, true, "file:///tmp/offline.html");
     expect(load).toHaveBeenCalledTimes(1);
@@ -42,8 +48,20 @@ describe("Electron callback adapters", () => {
     expect(callbacks.pageTitle(titleEvent)).toBe("CivCom");
     expect(titleEvent.preventDefault).toHaveBeenCalledOnce();
     callbacks.activate();
-    callbacks.ready(true);
+    callbacks.ready(true, true);
     expect(show).toHaveBeenCalledOnce();
+  });
+
+  it("never hides an unavailable tray application and converts tray setup exceptions to false", () => {
+    const show = vi.fn(); const hide = vi.fn();
+    const callbacks = createWindowCallbacks({ startUrl: "https://civcom.soia.info/", offlineUrl: "file:///tmp/offline.html", load: vi.fn(), show, hide, log: vi.fn() });
+    callbacks.ready(true, false);
+    expect(show).toHaveBeenCalledOnce();
+    const event = { preventDefault: vi.fn() };
+    expect(callbacks.close(event, false)).toBe("close");
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(hide).not.toHaveBeenCalled();
+    expect(createTraySafely(() => { throw new Error("icon"); })).toBe(false);
   });
 
   it("allows downloads only from the CivCom frame with an approved redirect chain", () => {

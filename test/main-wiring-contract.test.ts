@@ -26,7 +26,7 @@ describe("Electron main-process integration contract", () => {
   it("keeps lifecycle actions user-visible and the offline retry local", () => {
     expect(main).toContain('title: "CivCom", show: false');
     expect(main).toContain('label: "Zakończ CivCom"');
-    expect(main).toContain("event.preventDefault(); window.hide()");
+    expect(main).toContain("callbacks.close(event, trayAvailable)");
     expect(main).toContain("did-fail-load");
     expect(main).toContain("did-navigate-in-page");
     expect(main).toContain("offlineUrl");

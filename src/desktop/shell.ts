@@ -144,10 +144,14 @@ export function isHiddenStart(args: readonly string[]): boolean {
   return args.includes(APP_START_HIDDEN_ARG);
 }
 
-export function makeLoginItemSettings(platform: NodeJS.Platform, enabled: boolean): Readonly<{ openAtLogin: boolean; args: readonly string[]; enabled?: boolean }> {
-  return Object.freeze(platform === "darwin"
-    ? { openAtLogin: enabled, enabled, args: Object.freeze([APP_START_HIDDEN_ARG]) }
-    : { openAtLogin: enabled, args: Object.freeze([APP_START_HIDDEN_ARG]) });
+export type LoginItemSettings =
+  | Readonly<{ openAtLogin: boolean; type: "mainAppService" }>
+  | Readonly<{ openAtLogin: boolean; path: string; args: readonly string[] }>;
+
+export function makeLoginItemSettings(platform: NodeJS.Platform, enabled: boolean, executable = process.execPath): LoginItemSettings {
+  return platform === "darwin"
+    ? Object.freeze({ openAtLogin: enabled, type: "mainAppService" })
+    : Object.freeze({ openAtLogin: enabled, path: executable, args: Object.freeze([APP_START_HIDDEN_ARG]) });
 }
 
 const RESERVED_WINDOWS_BASENAMES = new Set(["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]);

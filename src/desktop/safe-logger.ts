@@ -17,8 +17,19 @@ export class RotatingSafeLogger {
     } catch { /* logging must never affect the shell */ }
   }
 
-  public lifecycle(event: "startup" | "ready" | "hide" | "stop" | "version" | "download-progress" | "update-error", code = "OK"): void {
-    try { this.append(event, code); } catch { /* logging must never affect the shell */ }
+  public lifecycle(event: unknown, code: unknown = "OK"): void {
+    try {
+      const safe = this.safeLifecycle(event, code);
+      this.append(safe.event, safe.code);
+    } catch { /* logging must never affect the shell */ }
+  }
+
+  private safeLifecycle(event: unknown, code: unknown): Readonly<{ event: string; code: string }> {
+    if (event === "startup" || event === "ready" || event === "hide" || event === "stop") return Object.freeze({ event, code: "OK" });
+    if (event === "version" && typeof code === "string" && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(code)) return Object.freeze({ event, code });
+    if (event === "download-progress" && typeof code === "string" && /^(?:[0-9]|10):(progressing|interrupted)$/.test(code)) return Object.freeze({ event, code });
+    if (event === "update-error" && (code === "ERR" || code === "UNCLASSIFIED")) return Object.freeze({ event, code });
+    return Object.freeze({ event: "security-event", code: "UNCLASSIFIED" });
   }
 
   private append(event: string, code: string): void {

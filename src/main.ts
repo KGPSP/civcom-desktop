@@ -6,7 +6,7 @@ import { dirname, join, posix, win32 } from "node:path";
 import { APPROVED_DOWNLOAD_PAGE, BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, isHiddenStart, makeLoginItemSettings, reserveDownloadDestination, UpdateScheduler } from "./desktop/shell.js";
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
 import { resolveStartUrl } from "./security/url-policy.js";
-import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createWindowCallbacks } from "./desktop/electron-adapters.js";
+import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createTraySafely, createWindowCallbacks } from "./desktop/electron-adapters.js";
 
 const { autoUpdater } = electronUpdater;
 
@@ -15,6 +15,7 @@ let tray: Tray | undefined;
 let quitting = false;
 let updater: UpdateScheduler | undefined;
 let activationPending = false;
+let trayAvailable = false;
 const downloadReservations = new Set<string>();
 let lifecycleLogger: RotatingSafeLogger | undefined;
 
@@ -57,12 +58,14 @@ function applyLoginStartup(enabled: boolean): void {
     const xdgConfig = process.env.XDG_CONFIG_HOME;
     const path = join(xdgConfig !== undefined && xdgConfig.startsWith("/") ? xdgConfig : join(app.getPath("home"), ".config"), "autostart", "civcom.desktop");
     if (!enabled) { try { rmSync(path); } catch { /* already disabled */ } return; }
-    const executable = process.execPath.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    const executable = process.execPath.replaceAll("%", "%%").replaceAll("$", "\\$").replaceAll("`", "\\`").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
     writeAtomic(path, `[Desktop Entry]\nType=Application\nName=CivCom\nExec="${executable}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
     return;
   }
-  const settings = makeLoginItemSettings(process.platform, enabled);
-  app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, args: [...settings.args], ...(settings.enabled === undefined ? {} : { enabled: settings.enabled }) });
+  const settings = makeLoginItemSettings(process.platform, enabled, process.execPath);
+  app.setLoginItemSettings("type" in settings
+    ? { openAtLogin: settings.openAtLogin, type: settings.type }
+    : { openAtLogin: settings.openAtLogin, path: settings.path, args: [...settings.args] });
 }
 async function promptForAutostart(): Promise<void> {
   if (!app.isPackaged) return;
@@ -83,13 +86,17 @@ function createMenu(): void {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
-function createTray(logger: RotatingSafeLogger): void {
-  const icon = nativeImage.createFromPath(join(app.getAppPath(), "assets", "civcom-tray.png"));
-  if (icon.isEmpty()) { logger.write({ event: "security-event", code: "UNCLASSIFIED" }); return; }
-  tray = new Tray(icon);
-  tray.setToolTip("CivCom");
-  tray.setContextMenu(Menu.buildFromTemplate([{ label: "Pokaż CivCom", click: showMainWindow }, { label: "Ukryj CivCom", click: () => mainWindow?.hide() }, { type: "separator" }, { label: "Sprawdź aktualizacje", click: () => { void updater?.manual(); } }, { type: "separator" }, { label: "Zakończ CivCom", click: quitApplication }]));
-  tray.on("click", showMainWindow);
+function createTray(logger: RotatingSafeLogger): boolean {
+  const available = createTraySafely(() => {
+    const icon = nativeImage.createFromPath(join(app.getAppPath(), "assets", "civcom-tray.png"));
+    if (icon.isEmpty()) throw new Error("empty-icon");
+    tray = new Tray(icon);
+    tray.setToolTip("CivCom");
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: "Pokaż CivCom", click: showMainWindow }, { label: "Ukryj CivCom", click: () => mainWindow?.hide() }, { type: "separator" }, { label: "Sprawdź aktualizacje", click: () => { void updater?.manual(); } }, { type: "separator" }, { label: "Zakończ CivCom", click: quitApplication }]));
+    tray.on("click", showMainWindow);
+  });
+  if (!available) logger.write({ event: "security-event", code: "UNCLASSIFIED" });
+  return available;
 }
 function configureSession(): Electron.Session {
   const civcomSession = session.fromPartition("persist:civcom");
@@ -127,7 +134,7 @@ function createWindow(startUrl: string, logger: RotatingSafeLogger): BrowserWind
   const restored = bounds.load(displays());
   const window = new BrowserWindow({ title: "CivCom", show: false, icon: join(app.getAppPath(), "assets", "civcom.svg"), ...(restored === undefined ? {} : restored), webPreferences: createWebPreferences() });
   const offlineUrl = createOfflinePageUrl(join(app.getAppPath(), "dist", "offline.html"));
-  const callbacks = createWindowCallbacks({ startUrl, offlineUrl, load: (url) => { void window.loadURL(url); }, show: showMainWindow, log: (event) => logger.write(event) });
+  const callbacks = createWindowCallbacks({ startUrl, offlineUrl, load: (url) => { void window.loadURL(url); }, show: showMainWindow, hide: () => window.hide(), log: (event) => logger.write(event) });
   const navigation = createNavigationCallbacks({ offlineUrl, load: (url) => { void window.loadURL(url); }, openExternal: shell.openExternal, log: (event) => logger.write(event) });
   const loadStart = (): void => { void window.loadURL(startUrl); };
   window.webContents.setWindowOpenHandler(({ url }) => navigation.windowOpen(url));
@@ -137,10 +144,14 @@ function createWindow(startUrl: string, logger: RotatingSafeLogger): BrowserWind
   window.webContents.on("did-fail-load", (_event, errorCode, _description, url, mainFrame) => callbacks.failedLoad(errorCode, mainFrame, url));
   window.webContents.on("did-navigate-in-page", (_event, url) => callbacks.retry(url));
   window.webContents.on("page-title-updated", (event) => window.setTitle(callbacks.pageTitle(event)));
-  window.on("close", (event) => { if (!quitting) { event.preventDefault(); window.hide(); logger.lifecycle("hide"); } });
+  window.on("close", (event) => {
+    if (quitting) return;
+    if (callbacks.close(event, trayAvailable) === "hide") { logger.lifecycle("hide"); return; }
+    quitting = true; updater?.stop(); logger.lifecycle("stop"); app.quit();
+  });
   window.on("close", () => bounds.save(window.getBounds(), displays()));
   configureDownloads(window.webContents, logger);
-  window.once("ready-to-show", () => { logger.lifecycle("ready"); callbacks.ready(isHiddenStart(process.argv) || (process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin)); if (activationPending) { activationPending = false; showMainWindow(); } });
+  window.once("ready-to-show", () => { logger.lifecycle("ready"); callbacks.ready(isHiddenStart(process.argv) || (process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin), trayAvailable); if (activationPending) { activationPending = false; showMainWindow(); } });
   loadStart();
   return window;
 }
@@ -161,7 +172,7 @@ if (!app.requestSingleInstanceLock()) app.quit(); else {
     const logger = createLogger();
     lifecycleLogger = logger;
     logger.lifecycle("startup"); logger.lifecycle("version", app.getVersion());
-    configureSession(); createMenu(); updater = configureUpdater(logger); mainWindow = createWindow(startUrl, logger); createTray(logger);
+    configureSession(); createMenu(); updater = configureUpdater(logger); trayAvailable = createTray(logger); mainWindow = createWindow(startUrl, logger);
     await promptForAutostart();
     await updater.start();
   });

@@ -70,8 +70,8 @@ describe("desktop shell policy", () => {
       promptAutostart: false,
       preferences: { autostartPrompted: true, autostartEnabled: true }
     });
-    expect(makeLoginItemSettings("darwin", true)).toEqual({ openAtLogin: true, enabled: true, args: ["--hidden"] });
-    expect(makeLoginItemSettings("win32", false)).toEqual({ openAtLogin: false, args: ["--hidden"] });
+    expect(makeLoginItemSettings("darwin", true)).toEqual({ openAtLogin: true, type: "mainAppService" });
+    expect(makeLoginItemSettings("win32", false, "C:\\CivCom.exe")).toEqual({ openAtLogin: false, path: "C:\\CivCom.exe", args: ["--hidden"] });
   });
 
   it("accepts only sensible on-screen persisted bounds and writes atomically", () => {
@@ -142,6 +142,18 @@ describe("safe local logging", () => {
   it("never throws when log storage fails and rotates by UTF-8 byte length", () => {
     const logger = new RotatingSafeLogger({ maxBytes: 4, maxFiles: 2, now: () => new Date(), read: () => { throw new Error("disk"); }, write: () => { throw new Error("disk"); }, remove: () => { throw new Error("disk"); } });
     expect(() => logger.lifecycle("startup", "ż")).not.toThrow();
+  });
+
+  it("turns arbitrary lifecycle inputs into fixed safe records", () => {
+    const files = new Map<string, string>();
+    const logger = new RotatingSafeLogger({ maxBytes: 1000, maxFiles: 2, now: () => new Date("2026-08-19T12:00:00.000Z"), read: (name) => files.get(name), write: (name, value) => files.set(name, value), remove: (name) => files.delete(name) });
+    logger.lifecycle("token=abc" as never, "token=abc");
+    logger.lifecycle(new Proxy({}, { get: () => { throw new Error("trap"); } }) as never, { toString: () => "secret" } as never);
+    const output = files.get("civcom.log") ?? "";
+    expect(output).toContain('"event":"security-event"');
+    expect(output).toContain('"code":"UNCLASSIFIED"');
+    expect(output).not.toContain("token=abc");
+    expect(output).not.toContain("secret");
   });
 });
 

@@ -14,8 +14,11 @@ function ownValue(input: unknown, key: string): unknown {
 function frameOrigin(details: unknown): string | undefined {
   const values = [ownValue(details, "securityOrigin"), ownValue(details, "requestingUrl"), ownValue(details, "requestingOrigin")]
     .filter((value): value is string => typeof value === "string");
-  if (values.length === 0 || new Set(values).size !== 1) return undefined;
-  return values[0];
+  if (values.length === 0) return undefined;
+  const services = values.map((value) => classifyTrustedOrigin(value)).map((result) => result.kind === "trusted" ? result.service : undefined);
+  if (services.some((service) => service === undefined) || new Set(services).size !== 1) return undefined;
+  const service = services[0];
+  return service === undefined ? undefined : `https://${service}.soia.info/`;
 }
 
 function mediaTypes(details: unknown, singular: boolean): readonly string[] | undefined {
@@ -39,6 +42,9 @@ export function createPermissionCallbacks(): Readonly<{
 }
 
 export type Preventable = Readonly<{ preventDefault(): void }>;
+export function createTraySafely(create: () => void): boolean {
+  try { create(); return true; } catch { return false; }
+}
 export function createNavigationCallbacks(dependencies: Readonly<{
   offlineUrl: string;
   load: (url: string) => void;
@@ -71,13 +77,15 @@ export function createWindowCallbacks(dependencies: Readonly<{
   offlineUrl: string;
   load: (url: string) => void;
   show: () => void;
+  hide: () => void;
   log: SafeLog;
 }>): Readonly<{
   failedLoad(errorCode: number, isMainFrame: boolean, url: string): void;
   retry(url: string): void;
   pageTitle(event: Preventable): "CivCom";
   activate(): void;
-  ready(hiddenStart: boolean): void;
+  ready(hiddenStart: boolean, trayAvailable: boolean): void;
+  close(event: Preventable, trayAvailable: boolean): "hide" | "close";
 }> {
   let offlineFailed = false;
   let activationPending = false;
@@ -91,7 +99,8 @@ export function createWindowCallbacks(dependencies: Readonly<{
     retry(url): void { if (url === `${dependencies.offlineUrl}#retry`) { offlineFailed = false; dependencies.load(dependencies.startUrl); } },
     pageTitle(event): "CivCom" { event.preventDefault(); return "CivCom"; },
     activate(): void { activationPending = true; },
-    ready(hiddenStart): void { if (activationPending || !hiddenStart) dependencies.show(); activationPending = false; }
+    ready(hiddenStart, trayAvailable): void { if (activationPending || !hiddenStart || !trayAvailable) dependencies.show(); activationPending = false; },
+    close(event, trayAvailable): "hide" | "close" { if (!trayAvailable) return "close"; event.preventDefault(); dependencies.hide(); dependencies.log({ event: "security-event", code: "UNCLASSIFIED" }); return "hide"; }
   });
 }
 
