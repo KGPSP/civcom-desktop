@@ -8,7 +8,7 @@ type CredentialMetadata = Readonly<{
   fileMode: number;
 }>;
 
-type CredentialMetadataValidator = (metadata: CredentialMetadata) => boolean;
+type CredentialMetadataValidator = (metadata: unknown) => boolean;
 
 type ManualCredentialResult =
   | Readonly<{
@@ -21,7 +21,11 @@ type ManualCredentialResult =
     }>;
 
 type ManualCredentialParser = (text: string, metadata: CredentialMetadata) => ManualCredentialResult;
-type RouteResolver = (route: unknown) => string;
+type RouteResolution =
+  | Readonly<{ kind: "resolved"; url: string }>
+  | Readonly<{ kind: "rejected"; code: "invalid-route" }>;
+
+type RouteResolver = (route: unknown) => RouteResolution;
 
 const validateCredentialMetadata = (
   credentialMetadata as unknown as {
@@ -100,9 +104,10 @@ describe("parseManualCredentialText", () => {
     if (result.kind !== "accepted") {
       return;
     }
-    expect(resolveValidatedRoute(result.credential.adresTest)).toBe(
-      "https://civcom.soia.info/#/room/!room-id:soia.info"
-    );
+    expect(resolveValidatedRoute(result.credential.adresTest)).toEqual({
+      kind: "resolved",
+      url: "https://civcom.soia.info/#/room/!room-id:soia.info"
+    });
     const accidentalRepresentations = [
       String(result.credential.login),
       String(result.credential.pass),
@@ -143,6 +148,35 @@ describe("parseManualCredentialText", () => {
     ).toEqual({ kind: "rejected", code: "invalid-metadata" });
   });
 
+  test("accepts only plain metadata with own data descriptors", () => {
+    const nullPrototype = Object.assign(Object.create(null), validMetadata);
+    const inherited = Object.create(validMetadata);
+    let getterReads = 0;
+    const accessor = Object.defineProperties({}, {
+      scope: {
+        enumerable: true,
+        get() {
+          getterReads += 1;
+          return "local";
+        }
+      },
+      purpose: { value: "interactive-manual-test", enumerable: true },
+      fileMode: { value: 0o600, enumerable: true }
+    });
+    const descriptorTrap = new Proxy({}, {
+      getOwnPropertyDescriptor() {
+        throw new Error("metadata descriptor trap");
+      }
+    });
+
+    expect(validateCredentialMetadata(nullPrototype)).toBe(true);
+    expect(validateCredentialMetadata(inherited)).toBe(false);
+    expect(validateCredentialMetadata(accessor)).toBe(false);
+    expect(getterReads).toBe(0);
+    expect(() => validateCredentialMetadata(descriptorTrap)).not.toThrow();
+    expect(validateCredentialMetadata(descriptorTrap)).toBe(false);
+  });
+
   test("rejects duplicate, extra, and empty credential fields without returning their text", () => {
     expect(
       parseManualCredentialText(
@@ -171,5 +205,62 @@ describe("parseManualCredentialText", () => {
         validMetadata
       )
     ).toEqual({ kind: "rejected", code: "invalid-route" });
+    expect(
+      parseManualCredentialText(
+        "adres_test=https://civcom.soia.info/#/room/opaque?access_token=not-allowed\nlogin=operator\npass=secret",
+        validMetadata
+      )
+    ).toEqual({ kind: "rejected", code: "invalid-route" });
+  });
+
+  test("rejects unsafe control and whitespace tricks without echoing credentials", () => {
+    for (const text of [
+      "adres_test=https://civcom.soia.info/\nlogin=operator\t\npass=secret",
+      "adres_test=https://civcom.soia.info/\rlogin=operator\npass=secret",
+      "adres_test=https://civcom.soia.info/\nlogin=operator\npass=secret\u0000",
+      "adres_test=https://civcom.soia.info/\nlogin=operator\npass=secret\u007f",
+      "adres_test= https://civcom.soia.info/\nlogin=operator\npass=secret",
+      "adres_test=https://civcom.soia.info/\nlogin =operator\npass=secret"
+    ]) {
+      const result = parseManualCredentialText(text, validMetadata);
+      expect(result.kind).toBe("rejected");
+      expect(JSON.stringify(result)).not.toContain("secret");
+    }
+  });
+
+  test("keeps CRLF parsing while refusing forged route objects without invoking them", () => {
+    const result = parseManualCredentialText(
+      "adres_test=https://civcom.soia.info/room\r\nlogin=operator\r\npass=secret\r\n",
+      validMetadata
+    );
+    expect(result.kind).toBe("accepted");
+    if (result.kind !== "accepted") {
+      return;
+    }
+    expect(resolveValidatedRoute(result.credential.adresTest)).toEqual({
+      kind: "resolved",
+      url: "https://civcom.soia.info/room"
+    });
+
+    let maliciousCalls = 0;
+    const forged = {
+      resolve() {
+        maliciousCalls += 1;
+        return "https://evil.example/";
+      },
+      toString: () => "[CivCom route]",
+      toJSON: () => "[CivCom route]"
+    };
+    const structural = { toString: () => "[CivCom route]", toJSON: () => "[CivCom route]" };
+    const hostileProxy = new Proxy({}, {
+      get() {
+        throw new Error("route getter must not run");
+      }
+    });
+    expect(resolveValidatedRoute(forged)).toEqual({ kind: "rejected", code: "invalid-route" });
+    expect(maliciousCalls).toBe(0);
+    expect(resolveValidatedRoute(structural)).toEqual({ kind: "rejected", code: "invalid-route" });
+    expect(() => resolveValidatedRoute(hostileProxy)).not.toThrow();
+    expect(resolveValidatedRoute(hostileProxy)).toEqual({ kind: "rejected", code: "invalid-route" });
   });
 });

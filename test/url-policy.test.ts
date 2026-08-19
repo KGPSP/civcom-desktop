@@ -35,7 +35,7 @@ type UrlPolicy = Readonly<{
   authorizeTopLevelNavigation(url: string): NavigationResult;
   authorizeExternalProtocol(url: string): ExternalProtocolResult;
   authorizePermissionRequest(input: Readonly<{ origin: string; permission: string }>): PermissionDecision;
-  authorizeDisplayMediaRequest(input: Readonly<{ origin: string; userGesture: boolean }>): DisplayMediaDecision;
+  authorizeDisplayMediaRequest(input: Readonly<{ origin: string; userGesture: unknown }>): DisplayMediaDecision;
 }>;
 
 const policy = urlPolicy as unknown as UrlPolicy;
@@ -71,7 +71,9 @@ describe("start URL policy", () => {
       "https://civcom.soia.info/",
       "http://localhost.evil:4173/",
       "file:///tmp/harness.html",
-      "http://operator:secret@127.0.0.1:4173/"
+      "http://operator:secret@127.0.0.1:4173/",
+      "http://localhost:4173/\tpath",
+      "http://localhost:4173/\npath"
     ]) {
       expect(policy.resolveStartUrl({ isPackaged: false, developmentUrl })).toEqual({
         kind: "deny",
@@ -111,6 +113,8 @@ describe("trusted origin policy", () => {
       "https://cіvcom.soia.info/",
       "https://xn--cvcom-5cd.soia.info/",
       "https://civcom.soia.info\\evil",
+      "https://civcom.soia.info/\tpath",
+      "https://civcom.soia.info/\npath",
       "http://civcom.soia.info/",
       "https:\\civcom.soia.info/",
       "not a URL"
@@ -149,11 +153,28 @@ describe("navigation protocol policy", () => {
       kind: "allow",
       protocol: "mailto:"
     });
+    expect(policy.authorizeExternalProtocol("mailto:service@example.org?subject=Bezpieczny%20temat")).toEqual({
+      kind: "allow",
+      protocol: "mailto:"
+    });
     for (const url of ["http://example.org/", "javascript:alert(1)", "file:///tmp/a", "matrix:r/example"]) {
       expect(policy.authorizeExternalProtocol(url)).toEqual({
         kind: "deny",
         code: "unsafe-protocol"
       });
+    }
+  });
+
+  test("rejects raw URL controls, backslashes, and mailto header-injection encodings", () => {
+    for (const url of [
+      "https://example.org/\tpath",
+      "https://example.org/\npath",
+      "https://example.org\\path",
+      "mailto:service@example.org\r\nBcc:attacker@example.org",
+      "mailto:service@example.org%0d%0aBcc:attacker@example.org",
+      "mailto:service@example.org%00"
+    ]) {
+      expect(policy.authorizeExternalProtocol(url)).toEqual({ kind: "deny", code: "unsafe-protocol" });
     }
   });
 });
@@ -203,5 +224,10 @@ describe("permission policy", () => {
     expect(
       policy.authorizeDisplayMediaRequest({ origin: "https://auth.soia.info/", userGesture: true })
     ).toEqual({ kind: "deny", code: "untrusted-origin" });
+    for (const userGesture of ["true", 1, {}, new Boolean(true)]) {
+      expect(
+        policy.authorizeDisplayMediaRequest({ origin: "https://civcom.soia.info/", userGesture })
+      ).toEqual({ kind: "deny", code: "missing-user-gesture" });
+    }
   });
 });

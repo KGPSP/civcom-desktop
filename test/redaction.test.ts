@@ -81,4 +81,35 @@ describe("log redaction", () => {
     expect(() => policy.createSafeLogEvent(hostile)).not.toThrow();
     expect(() => policy.createSafeLogEvent(null)).not.toThrow();
   });
+
+  test("reads only own data descriptors without invoking getters or inherited values", () => {
+    let getterReads = 0;
+    const accessorInput = Object.defineProperties({}, {
+      event: {
+        enumerable: true,
+        get() {
+          getterReads += 1;
+          return "load-failed";
+        }
+      },
+      code: { value: "ERR_FAILED", enumerable: true },
+      url: { value: "https://civcom.soia.info/", enumerable: true }
+    });
+    const inheritedInput = Object.create({
+      event: "load-failed",
+      code: "ERR_FAILED",
+      url: "https://civcom.soia.info/"
+    });
+    const descriptorTrap = new Proxy({}, {
+      getOwnPropertyDescriptor() {
+        throw new Error("redaction descriptor trap");
+      }
+    });
+
+    expect(policy.createSafeLogEvent(accessorInput)).toEqual({ event: "security-event", code: "ERR_FAILED", url: "https://civcom.soia.info/" });
+    expect(getterReads).toBe(0);
+    expect(policy.createSafeLogEvent(inheritedInput)).toEqual({ event: "security-event", code: "UNCLASSIFIED" });
+    expect(() => policy.createSafeLogEvent(descriptorTrap)).not.toThrow();
+    expect(policy.createSafeLogEvent(descriptorTrap)).toEqual({ event: "security-event", code: "UNCLASSIFIED" });
+  });
 });

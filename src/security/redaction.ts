@@ -37,12 +37,14 @@ const SAFE_ERROR_CODES: ReadonlySet<SafeErrorCode> = new Set([
 ]);
 
 function safeStringProperty(value: unknown, property: string): string | undefined {
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+  if (value === null || typeof value !== "object") {
     return undefined;
   }
   try {
-    const candidate = Reflect.get(value, property);
-    return typeof candidate === "string" ? candidate : undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, property);
+    return descriptor !== undefined && "value" in descriptor && typeof descriptor.value === "string"
+      ? descriptor.value
+      : undefined;
   } catch {
     return undefined;
   }

@@ -10,12 +10,28 @@ export function validateCredentialMetadata(metadata: unknown): metadata is Crede
   if (metadata === null || typeof metadata !== "object") {
     return false;
   }
-  const candidate = metadata as Partial<CredentialMetadata>;
-  return (
-    candidate.scope === "local" &&
-    candidate.purpose === "interactive-manual-test" &&
-    candidate.fileMode === 0o600
-  );
+  try {
+    const prototype = Object.getPrototypeOf(metadata);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return false;
+    }
+    const scope = Object.getOwnPropertyDescriptor(metadata, "scope");
+    const purpose = Object.getOwnPropertyDescriptor(metadata, "purpose");
+    const fileMode = Object.getOwnPropertyDescriptor(metadata, "fileMode");
+    return (
+      scope !== undefined &&
+      purpose !== undefined &&
+      fileMode !== undefined &&
+      "value" in scope &&
+      "value" in purpose &&
+      "value" in fileMode &&
+      scope.value === "local" &&
+      purpose.value === "interactive-manual-test" &&
+      fileMode.value === 0o600
+    );
+  } catch {
+    return false;
+  }
 }
 
 const INSPECT_CUSTOM = Symbol.for("nodejs.util.inspect.custom");
@@ -63,12 +79,9 @@ class Secret implements OpaqueSecret {
   }
 }
 
-class Route implements ValidatedRoute {
-  readonly #url: string;
+const validatedRouteValues = new WeakMap<object, string>();
 
-  public constructor(url: string) {
-    this.#url = url;
-  }
+class Route implements ValidatedRoute {
 
   public toString(): "[CivCom route]" {
     return "[CivCom route]";
@@ -82,9 +95,6 @@ class Route implements ValidatedRoute {
     return "[CivCom route]";
   }
 
-  public resolve(): string {
-    return this.#url;
-  }
 }
 
 function rejected(code: Extract<ManualCredentialResult, { kind: "rejected" }>["code"]): ManualCredentialResult {
@@ -92,23 +102,41 @@ function rejected(code: Extract<ManualCredentialResult, { kind: "rejected" }>["c
 }
 
 function hasQuery(value: string): boolean {
-  return value.slice(0, value.indexOf("#") === -1 ? value.length : value.indexOf("#")).includes("?");
+  return value.includes("?");
+}
+
+function hasInvalidCredentialControl(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 9 || (code >= 11 && code <= 12) || (code >= 14 && code <= 31) || code === 127) {
+      return true;
+    }
+    if (code === 13 && value.charCodeAt(index + 1) !== 10) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function validateRoute(value: string): ValidatedRoute | undefined {
-  if (hasQuery(value)) {
+  if (hasQuery(value) || /\s/.test(value)) {
     return undefined;
   }
   const origin = classifyTrustedOrigin(value);
   if (origin.kind !== "trusted" || origin.service !== "civcom") {
     return undefined;
   }
-  return Object.freeze(new Route(value));
+  const route = Object.freeze(new Route());
+  validatedRouteValues.set(route, value);
+  return route;
 }
 
 export function parseManualCredentialText(text: string, metadata: unknown): ManualCredentialResult {
   if (!validateCredentialMetadata(metadata)) {
     return rejected("invalid-metadata");
+  }
+  if (typeof text !== "string" || hasInvalidCredentialControl(text)) {
+    return rejected("invalid-format");
   }
 
   const lines = text.split(/\r?\n/);
@@ -158,6 +186,16 @@ export function parseManualCredentialText(text: string, metadata: unknown): Manu
   });
 }
 
-export function resolveValidatedRoute(route: ValidatedRoute): string {
-  return (route as Route).resolve();
+export type RouteResolution =
+  | Readonly<{ kind: "resolved"; url: string }>
+  | Readonly<{ kind: "rejected"; code: "invalid-route" }>;
+
+export function resolveValidatedRoute(route: unknown): RouteResolution {
+  if (route === null || (typeof route !== "object" && typeof route !== "function")) {
+    return Object.freeze({ kind: "rejected", code: "invalid-route" });
+  }
+  const url = validatedRouteValues.get(route);
+  return url === undefined
+    ? Object.freeze({ kind: "rejected", code: "invalid-route" })
+    : Object.freeze({ kind: "resolved", url });
 }

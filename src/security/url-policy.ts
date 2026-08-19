@@ -42,8 +42,18 @@ const ALLOWED_PERMISSIONS: ReadonlySet<AllowedPermission> = new Set([
   "clipboard-sanitized-write"
 ]);
 
+function hasUnsafeRawUrlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || code === 127 || value[index] === "\\") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function parseDirectHttpsUrl(value: string): URL | undefined {
-  if (!/^https:\/\//i.test(value)) {
+  if (hasUnsafeRawUrlCharacters(value) || !/^https:\/\//i.test(value)) {
     return undefined;
   }
 
@@ -64,6 +74,9 @@ function parseDirectHttpsUrl(value: string): URL | undefined {
 }
 
 function isLoopbackDevelopmentUrl(value: string): URL | undefined {
+  if (hasUnsafeRawUrlCharacters(value)) {
+    return undefined;
+  }
   try {
     const url = new URL(value);
     if (
@@ -121,12 +134,15 @@ export function authorizeTopLevelNavigation(value: string): NavigationResult {
 }
 
 export function authorizeExternalProtocol(value: string): ExternalProtocolResult {
+  if (hasUnsafeRawUrlCharacters(value)) {
+    return Object.freeze({ kind: "deny", code: "unsafe-protocol" });
+  }
   try {
     const url = new URL(value);
     if (url.protocol === "https:" && url.username === "" && url.password === "") {
       return Object.freeze({ kind: "allow", protocol: "https:" });
     }
-    if (url.protocol === "mailto:") {
+    if (url.protocol === "mailto:" && !/%(?:0d|0a|00)/i.test(value)) {
       return Object.freeze({ kind: "allow", protocol: "mailto:" });
     }
     return Object.freeze({ kind: "deny", code: "unsafe-protocol" });
@@ -147,13 +163,13 @@ export function authorizePermissionRequest(input: Readonly<{ origin: string; per
 }
 
 export function authorizeDisplayMediaRequest(
-  input: Readonly<{ origin: string; userGesture: boolean }>
+  input: Readonly<{ origin: string; userGesture: unknown }>
 ): DisplayMediaDecision {
   const origin = classifyTrustedOrigin(input.origin);
   if (origin.kind !== "trusted" || (origin.service !== "civcom" && origin.service !== "call")) {
     return Object.freeze({ kind: "deny", code: "untrusted-origin" });
   }
-  if (!input.userGesture) {
+  if (input.userGesture !== true) {
     return Object.freeze({ kind: "deny", code: "missing-user-gesture" });
   }
   return Object.freeze({ kind: "allow" });
