@@ -17,44 +17,138 @@ const permittedElements = new Set([
   "line",
   "polyline",
   "polygon",
-  "rect",
-  "title",
-  "desc"
+  "rect"
 ]);
-const permittedAttributes = new Set([
-  "viewBox",
-  "width",
-  "height",
-  "role",
-  "aria-label",
-  "x",
-  "y",
-  "x1",
-  "x2",
-  "y1",
-  "y2",
-  "cx",
-  "cy",
-  "r",
-  "rx",
-  "ry",
-  "d",
-  "points",
-  "fill",
-  "fill-opacity",
-  "fill-rule",
-  "stroke",
-  "stroke-opacity",
-  "stroke-width",
-  "stroke-linecap",
-  "stroke-linejoin",
-  "stroke-miterlimit",
-  "opacity",
-  "transform"
-]);
+const safePaint = /^(?:none|currentColor|transparent|#(?:[\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8}))$/i;
+const numberPattern = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
+const pathDataPattern = /^[MmZzLlHhVvCcSsQqTtAa0-9,.\s+-]+$/;
+const pathCommand = /[MmZzLlHhVvCcSsQqTtAa]/;
+const plainLabel = /^[\p{L}\p{N}\p{Zs}.,:;!?'()-]{1,120}$/u;
 const xmlEntityReference = /&(?:#\d+|#x[\da-f]+|[a-z][\w.-]*);/i;
 const xmlDtd = /<!DOCTYPE\b|<!ENTITY\b/i;
-const paintServerReference = /url\s*\(/i;
+
+function parseNumber(value) {
+  if (!numberPattern.test(value)) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseNumberList(value) {
+  const normalized = value.trim();
+  if (normalized === "") {
+    return undefined;
+  }
+
+  const values = normalized.split(/[\s,]+/);
+  const parsed = values.map(parseNumber);
+  return parsed.every((number) => number !== undefined) ? parsed : undefined;
+}
+
+function isFiniteNumber(value) {
+  return parseNumber(value) !== undefined;
+}
+
+function isNonNegativeNumber(value) {
+  const number = parseNumber(value);
+  return number !== undefined && number >= 0;
+}
+
+function isPositiveNumber(value) {
+  const number = parseNumber(value);
+  return number !== undefined && number > 0;
+}
+
+function isOpacity(value) {
+  const number = parseNumber(value);
+  return number !== undefined && number >= 0 && number <= 1;
+}
+
+function isViewBox(value) {
+  const values = parseNumberList(value);
+  return values !== undefined && values.length === 4 && values[2] > 0 && values[3] > 0;
+}
+
+function isPoints(value) {
+  const values = parseNumberList(value);
+  return values !== undefined && values.length >= 4 && values.length % 2 === 0;
+}
+
+function isPathData(value) {
+  return pathDataPattern.test(value) && pathCommand.test(value);
+}
+
+function isTransform(value) {
+  const allowedArity = {
+    translate: new Set([1, 2]),
+    scale: new Set([1, 2]),
+    rotate: new Set([1, 3]),
+    skewX: new Set([1]),
+    skewY: new Set([1]),
+    matrix: new Set([6])
+  };
+  let remaining = value.trim();
+  let foundTransform = false;
+
+  while (remaining !== "") {
+    const match = /^(translate|scale|rotate|skewX|skewY|matrix)\(([^()]*)\)/.exec(remaining);
+    if (match === null) {
+      return false;
+    }
+
+    const values = parseNumberList(match[2]);
+    if (values === undefined || !allowedArity[match[1]].has(values.length)) {
+      return false;
+    }
+
+    foundTransform = true;
+    remaining = remaining.slice(match[0].length).trimStart();
+  }
+
+  return foundTransform;
+}
+
+const attributeValidators = new Map([
+  ["viewBox", isViewBox],
+  ["width", isPositiveNumber],
+  ["height", isPositiveNumber],
+  ["role", (value) => value === "img"],
+  ["aria-label", (value) => plainLabel.test(value)],
+  ["x", isFiniteNumber],
+  ["y", isFiniteNumber],
+  ["x1", isFiniteNumber],
+  ["x2", isFiniteNumber],
+  ["y1", isFiniteNumber],
+  ["y2", isFiniteNumber],
+  ["cx", isFiniteNumber],
+  ["cy", isFiniteNumber],
+  ["r", isNonNegativeNumber],
+  ["rx", isNonNegativeNumber],
+  ["ry", isNonNegativeNumber],
+  ["d", isPathData],
+  ["points", isPoints],
+  ["fill", (value) => safePaint.test(value)],
+  ["fill-opacity", isOpacity],
+  ["fill-rule", (value) => value === "nonzero" || value === "evenodd"],
+  ["stroke", (value) => safePaint.test(value)],
+  ["stroke-opacity", isOpacity],
+  ["stroke-width", isNonNegativeNumber],
+  ["stroke-linecap", (value) => value === "butt" || value === "round" || value === "square"],
+  ["stroke-linejoin", (value) => value === "miter" || value === "round" || value === "bevel"],
+  ["stroke-miterlimit", isNonNegativeNumber],
+  ["opacity", isOpacity],
+  ["transform", isTransform]
+]);
+
+function isSafeAttributeValue(name, value) {
+  if (value.includes("\\") || value.includes("/*") || value.includes("*/") || /url\s*\(/i.test(value)) {
+    return false;
+  }
+
+  return attributeValidators.get(name)?.(value) ?? false;
+}
 
 export function isSafeSvgContent(content) {
   if (xmlDtd.test(content) || xmlEntityReference.test(content)) {
@@ -69,6 +163,9 @@ export function isSafeSvgContent(content) {
   parser.on("error", () => {
     isSafe = false;
   });
+  parser.on("xmldecl", () => {
+    isSafe = false;
+  });
   parser.on("doctype", () => {
     isSafe = false;
   });
@@ -79,16 +176,16 @@ export function isSafeSvgContent(content) {
     isSafe = false;
   });
   parser.on("text", (text) => {
-    if (elementDepth === 0 && text.trim() !== "") {
+    if (text.trim() !== "") {
       isSafe = false;
     }
   });
   parser.on("opentag", (tag) => {
-    if (!rootSeen) {
-      rootSeen = true;
-      if (tag.name !== "svg") {
+    if (elementDepth === 0) {
+      if (rootSeen || tag.name !== "svg") {
         isSafe = false;
       }
+      rootSeen = true;
     }
 
     elementDepth += 1;
@@ -100,13 +197,10 @@ export function isSafeSvgContent(content) {
     for (const attribute of Object.values(tag.attributes)) {
       const isRootNamespace =
         elementDepth === 1 && attribute.name === "xmlns" && attribute.value === svgNamespace;
-      const isPermittedAttribute =
-        attribute.name !== "xmlns" && permittedAttributes.has(attribute.name);
 
       if (
         attribute.prefix !== "" ||
-        (!isRootNamespace && !isPermittedAttribute) ||
-        paintServerReference.test(attribute.value)
+        (!isRootNamespace && !isSafeAttributeValue(attribute.name, attribute.value))
       ) {
         isSafe = false;
       }

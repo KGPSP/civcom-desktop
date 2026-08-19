@@ -34,6 +34,30 @@ describe("isSafeSvgContent", () => {
     ).toBe(false);
   });
 
+  test("rejects a CSS hex-escaped paint URL", () => {
+    expect(
+      isSafeSvgContent(
+        '<svg xmlns="http://www.w3.org/2000/svg"><path fill="u\\72l(https://attacker.example/p.svg)"/></svg>'
+      )
+    ).toBe(false);
+  });
+
+  test("rejects a CSS comment-split paint URL", () => {
+    expect(
+      isSafeSvgContent(
+        '<svg xmlns="http://www.w3.org/2000/svg"><path fill="u/**/rl(https://attacker.example/p.svg)"/></svg>'
+      )
+    ).toBe(false);
+  });
+
+  test("rejects a CSS hex escape terminated by whitespace", () => {
+    expect(
+      isSafeSvgContent(
+        '<svg xmlns="http://www.w3.org/2000/svg"><path fill="u\\72 l(https://attacker.example/p.svg)"/></svg>'
+      )
+    ).toBe(false);
+  });
+
   test("rejects local-fragment paint URLs as well", () => {
     expect(
       isSafeSvgContent(
