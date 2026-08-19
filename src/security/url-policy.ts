@@ -127,39 +127,64 @@ function isAllowedPermission(value: unknown): value is AllowedPermission {
   return value === "media" || value === "notifications" || value === "fullscreen" || value === "clipboard-sanitized-write";
 }
 
-function hasMalformedPercentEncoding(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
+type PercentDecode = Readonly<{ value: string; decoded: boolean }>;
+
+function isHexCharacter(value: string | undefined): boolean {
+  return value !== undefined && /^[0-9a-f]$/i.test(value);
+}
+
+function decodePercentRuns(value: string, rejectMalformed: boolean): PercentDecode | undefined {
+  let decoded = false;
+  let output = "";
+  let index = 0;
+  while (index < value.length) {
     if (value[index] !== "%") {
+      output += value[index];
+      index += 1;
       continue;
     }
     const first = value[index + 1];
     const second = value[index + 2];
-    if (first === undefined || second === undefined || !/^[0-9a-f]$/i.test(first) || !/^[0-9a-f]$/i.test(second)) {
-      return true;
+    if (!isHexCharacter(first) || !isHexCharacter(second)) {
+      if (rejectMalformed) {
+        return undefined;
+      }
+      output += "%";
+      index += 1;
+      continue;
     }
+    let encoded = "";
+    while (value[index] === "%" && isHexCharacter(value[index + 1]) && isHexCharacter(value[index + 2])) {
+      encoded += value.slice(index, index + 3);
+      index += 3;
+    }
+    try {
+      output += decodeURIComponent(encoded);
+    } catch {
+      return undefined;
+    }
+    decoded = true;
   }
-  return false;
+  return Object.freeze({ value: output, decoded });
 }
 
 function hasUnsafeMailtoEncoding(value: string): boolean {
   let candidate = value;
   for (let layer = 0; layer < 8; layer += 1) {
-    if (hasUnsafeRawUrlCharacters(candidate) || hasMalformedPercentEncoding(candidate)) {
+    if (hasUnsafeRawUrlCharacters(candidate)) {
       return true;
     }
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(candidate);
-    } catch {
+    const decoded = decodePercentRuns(candidate, layer === 0);
+    if (decoded === undefined) {
       return true;
     }
-    if (hasUnsafeRawUrlCharacters(decoded) || hasMalformedPercentEncoding(decoded)) {
+    if (hasUnsafeRawUrlCharacters(decoded.value)) {
       return true;
     }
-    if (decoded === candidate || !/%[0-9a-f]{2}/i.test(decoded)) {
+    if (!decoded.decoded) {
       return false;
     }
-    candidate = decoded;
+    candidate = decoded.value;
   }
   return true;
 }

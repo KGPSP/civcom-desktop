@@ -157,6 +157,14 @@ describe("navigation protocol policy", () => {
       kind: "allow",
       protocol: "mailto:"
     });
+    for (const url of [
+      "mailto:service@example.org?subject=100%25",
+      "mailto:service@example.org?subject=100%2525",
+      "mailto:service@example.org?subject=100%25zz",
+      "mailto:service@example.org?subject=%C5%BC%C3%B3%C5%82%C4%87"
+    ]) {
+      expect(policy.authorizeExternalProtocol(url)).toEqual({ kind: "allow", protocol: "mailto:" });
+    }
     for (const url of ["http://example.org/", "javascript:alert(1)", "file:///tmp/a", "matrix:r/example"]) {
       expect(policy.authorizeExternalProtocol(url)).toEqual({
         kind: "deny",
@@ -178,7 +186,8 @@ describe("navigation protocol policy", () => {
       "mailto:service@example.org%25250aBcc:attacker@example.org",
       "mailto:service@example.org%255cBcc:attacker@example.org",
       "mailto:service@example.org%2",
-      "mailto:service@example.org%25zz"
+      "mailto:service@example.org?subject=100%2525%25250a",
+      "mailto:service@example.org?subject=%FF"
     ]) {
       expect(policy.authorizeExternalProtocol(url)).toEqual({ kind: "deny", code: "unsafe-protocol" });
     }
