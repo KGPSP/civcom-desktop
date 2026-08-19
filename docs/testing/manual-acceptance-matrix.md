@@ -74,3 +74,7 @@ Legenda zestawów: `W` — Windows, `M` — macOS, `L` — Linux, `C` — przypa
 ## Decyzja wydaniowa
 
 Produkcja może być zaakceptowana dopiero wtedy, gdy wszystkie wymagane wiersze mają `PASS` lub uzasadnione `N/A`, a każdy `BLOCKED` jest jawnie zamknięty przed publikacją. Pilot niepodpisany nie może zastąpić wyników podpisanego instalatora ani testu aktualizacji z poprzedniej podpisanej wersji.
+
+Wyjątek bootstrapowy: wyłącznie dla pierwszego stabilnego wydania `v0.1.0` przypadki `C-18` i `C-20` mogą otrzymać `N/A`, ponieważ nie istnieje wcześniejsza podpisana wersja. Decyzję trzeba jawnie zatwierdzić i zapisać w dowodzie wydania; nie zwalnia ona z pozostałych testów aktualizatora możliwych bez poprzedniej wersji.
+
+Obowiązkowe zamknięcie wyjątku: przed publikacją `v0.1.1` przypadki `C-18` i `C-20` muszą otrzymać `PASS` dla aktualizacji z podpisanego `v0.1.0`. Wyjątku nie wolno przenosić na kolejne wydania.

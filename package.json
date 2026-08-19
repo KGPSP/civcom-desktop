@@ -11,6 +11,7 @@
     "npm": ">=11"
   },
   "license": "EUPL-1.2",
+  "author": "Komenda Główna Państwowej Straży Pożarnej — Biuro Informatyki i Łączności",
   "repository": {
     "type": "git",
     "url": "https://github.com/KGPSP/civcom-desktop.git"
@@ -18,7 +19,7 @@
   "bugs": {
     "url": "https://github.com/KGPSP/civcom-desktop/issues"
   },
-  "homepage": "https://github.com/KGPSP/civcom-desktop#readme",
+  "homepage": "https://kgpsp.github.io/civcom-desktop/",
   "build": {
     "appId": "info.soia.civcom.desktop",
     "productName": "CivCom"
@@ -43,7 +44,7 @@
     "package:linux": "node scripts/run-builder.mjs linux",
     "package:verify": "node scripts/verify-packaged-app.mjs",
     "release:verify": "node scripts/release-artifacts.mjs verify release/assembled",
-    "release:sha256": "node scripts/release-artifacts.mjs sha256 release/assembled",
+    "release:checksums": "node scripts/release-artifacts.mjs checksums release/assembled",
     "release:sbom": "node scripts/release-artifacts.mjs sbom release/assembled"
   },
   "devDependencies": {

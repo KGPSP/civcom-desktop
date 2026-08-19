@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSha256Manifest, loadReleaseContract, resolveExpectedAppVersion, validateBuildSbom, verifyReleaseDirectory } from "./release-contract.mjs";
+import { createMd5Manifest, createSha256Manifest, loadReleaseContract, resolveExpectedAppVersion, validateBuildSbom, verifyReleaseDirectory } from "./release-contract.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const downloads = JSON.parse(await readFile(join(projectRoot, "docs", "downloads.json"), "utf8"));
@@ -23,9 +23,10 @@ async function writeNewFile(path, contents) {
 }
 
 export async function generateChecksums(directory) {
-  const filenames = contract.orderedAssets.filter((filename) => filename !== contract.assets.checksums);
-  const contents = await createSha256Manifest(directory, filenames);
-  await writeNewFile(join(directory, contract.assets.checksums), contents);
+  const filenames = contract.orderedAssets.filter((filename) => filename !== contract.assets.checksums && filename !== contract.assets.md5Checksums);
+  const [sha256Contents, md5Contents] = await Promise.all([createSha256Manifest(directory, filenames), createMd5Manifest(directory, filenames)]);
+  await writeNewFile(join(directory, contract.assets.checksums), sha256Contents);
+  await writeNewFile(join(directory, contract.assets.md5Checksums), md5Contents);
 }
 
 export function createSbomInvocation(environment) {
@@ -58,8 +59,8 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
   const [command, requestedDirectory = "release/assembled", ...extra] = process.argv.slice(2);
   if (extra.length !== 0) throw new Error("Unexpected release artifact arguments");
   const directory = resolve(projectRoot, requestedDirectory);
-  if (command === "sha256") await generateChecksums(directory);
+  if (command === "checksums") await generateChecksums(directory);
   else if (command === "sbom") await generateBuildSbom(directory);
   else if (command === "verify") await verifyRelease(directory);
-  else throw new Error("Expected release command: sha256, sbom, or verify");
+  else throw new Error("Expected release command: checksums, sbom, or verify");
 }

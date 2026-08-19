@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -17,7 +18,8 @@ const ASSET_NAMES = Object.freeze({
   linuxDeb: "CivCom-Linux-x86_64.deb",
   linuxMetadata: "latest-linux.yml",
   buildSbom: "CivCom-build.spdx.json",
-  checksums: "SHA256SUMS"
+  checksums: "SHA256SUMS",
+  md5Checksums: "MD5SUMS"
 });
 const ASSET_KEYS = Object.freeze(Object.keys(ASSET_NAMES));
 const PINNED_BUILD_PACKAGES = Object.freeze({
@@ -155,16 +157,26 @@ export async function verifyUpdateMetadataFiles(directory, text, expectedFilenam
   return metadata;
 }
 
-export async function createSha256Manifest(directory, filenames) {
+async function createDigestManifest(directory, filenames, algorithm, label) {
   const names = [...filenames].map(safeFilename).sort();
-  if (new Set(names).size !== names.length || names.includes(ASSET_NAMES.checksums)) throw new Error("Invalid checksum input set");
+  if (new Set(names).size !== names.length || names.includes(ASSET_NAMES.checksums) || names.includes(ASSET_NAMES.md5Checksums)) throw new Error(`Invalid ${label} checksum input set`);
   const lines = [];
   for (const filename of names) {
     const path = await regularFile(directory, filename);
-    const digest = createHash("sha256").update(await readFile(path)).digest("hex");
+    const hash = createHash(algorithm);
+    for await (const chunk of createReadStream(path)) hash.update(chunk);
+    const digest = hash.digest("hex");
     lines.push(`${digest}  ${filename}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+export async function createSha256Manifest(directory, filenames) {
+  return await createDigestManifest(directory, filenames, "sha256", "SHA-256");
+}
+
+export async function createMd5Manifest(directory, filenames) {
+  return await createDigestManifest(directory, filenames, "md5", "MD5");
 }
 
 export async function verifyIdenticalReleaseDirectories(localDirectory, remoteDirectory, contractValue) {
@@ -179,10 +191,15 @@ export async function verifyIdenticalReleaseDirectories(localDirectory, remoteDi
 }
 
 async function verifyChecksums(directory, contract) {
+  const payloadNames = contract.orderedAssets.filter((filename) => filename !== contract.assets.checksums && filename !== contract.assets.md5Checksums);
   const checksumPath = await regularFile(directory, contract.assets.checksums);
   const actual = await readFile(checksumPath, "utf8");
-  const expected = await createSha256Manifest(directory, contract.orderedAssets.filter((filename) => filename !== contract.assets.checksums));
+  const expected = await createSha256Manifest(directory, payloadNames);
   if (actual !== expected) throw new Error("SHA256SUMS does not match the canonical release assets");
+  const md5ChecksumPath = await regularFile(directory, contract.assets.md5Checksums);
+  const actualMd5 = await readFile(md5ChecksumPath, "utf8");
+  const expectedMd5 = await createMd5Manifest(directory, payloadNames);
+  if (actualMd5 !== expectedMd5) throw new Error("MD5SUMS does not match the canonical release assets");
 }
 
 export async function verifyReleaseDirectory(directory, contractValue, options = {}) {

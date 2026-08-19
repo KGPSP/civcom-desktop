@@ -139,6 +139,17 @@ function validateRelease(workflow, source) {
   for (const platform of ["windows", "macos", "linux"]) {
     if (!source.includes(`node scripts/stage-platform-artifacts.mjs ${platform}`) || !source.includes(`path: release/staged/${platform}/`)) throw new Error(`Production artifact staging policy missing: ${platform}`);
   }
+  const assemblyCommands = steps({ jobs: { assemble: record(jobs.assemble, "Release assembly job missing") } })
+    .map((step) => step.run)
+    .filter((command) => typeof command === "string");
+  const expectedAssemblySequence = [
+    "npm ci",
+    "node scripts/assemble-release.mjs release/incoming release/assembled",
+    "npm run release:sbom",
+    "npm run release:checksums",
+    "npm run release:verify"
+  ];
+  if (assemblyCommands.join("\n") !== expectedAssemblySequence.join("\n")) throw new Error("Release assembly and checksum sequence missing");
   if (/^\s+path:\s+release\/\s*$/m.test(source)) throw new Error("Production workflow may not upload the entire package output");
   if (/^\s+APPLE_API_KEY:\s*\$\{\{\s*secrets\./m.test(source) || !source.includes("CIVCOM_APPLE_API_KEY_CONTENT: ${{ secrets.CIVCOM_APPLE_API_KEY }}") || !source.includes("$RUNNER_TEMP/civcom-notarization-key.p8") || !source.includes("chmod 0600") || !source.includes('test -s "$key_path"') || !source.includes("if: always()")) throw new Error("macOS notarization key is not handled as a temporary nonempty 0600 file");
   if (!source.includes("gh attestation verify") || !String(record(jobs.publish, "Publication job missing").needs).includes("attest")) throw new Error("Attestations are not verified before publication");

@@ -60,6 +60,8 @@ describe("GitHub automation policy", () => {
     expect(release).toContain("node scripts/stage-platform-artifacts.mjs windows");
     expect(release).toContain("node scripts/stage-platform-artifacts.mjs macos");
     expect(release).toContain("node scripts/stage-platform-artifacts.mjs linux");
+    expect(release).toContain("npm run release:checksums");
+    expect(release).not.toContain("npm run release:sha256");
     expect(pilot).toContain("node scripts/stage-platform-artifacts.mjs ${{ matrix.target }}");
     expect(`${pilot}\n${release}`).not.toMatch(/^\s+path:\s+release\/\s*$/m);
   });
@@ -94,6 +96,7 @@ describe("GitHub automation policy", () => {
       release.replace("permissions: {}", "permissions:\n  contents: write"),
       release.replace('test -s "$key_path"', ":"),
       release.replace("xvfb-run -a npm run test:live:anonymous", ":"),
+      release.replace("npm run release:checksums", ":"),
       release.replace("needs: preflight", "needs: assemble")
     ]) expect(() => validateWorkflowSource("release.yml", hostile)).toThrow();
   });

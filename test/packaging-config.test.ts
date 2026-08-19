@@ -16,12 +16,15 @@ const base = Object.freeze({ CIVCOM_BUILD_MODE: "pilot" });
 
 describe("effective electron-builder configuration", () => {
   it("exposes the required Node 24 verification and packaging commands", () => {
-    const packageJson = require("../package.json") as { engines: Record<string, string>; scripts: Record<string, string> };
+    const packageJson = require("../package.json") as { author: string; homepage: string; engines: Record<string, string>; scripts: Record<string, string> };
+    expect(packageJson.author).toBe("Komenda Główna Państwowej Straży Pożarnej — Biuro Informatyki i Łączności");
+    expect(packageJson.homepage).toBe("https://kgpsp.github.io/civcom-desktop/");
     expect(packageJson.engines.node).toBe(">=24 <25");
-    for (const script of ["verify", "package:win", "package:mac", "package:linux", "package:verify", "release:verify", "release:sha256", "release:sbom"]) expect(packageJson.scripts[script]).toBeTypeOf("string");
+    for (const script of ["verify", "package:win", "package:mac", "package:linux", "package:verify", "release:verify", "release:checksums", "release:sbom"]) expect(packageJson.scripts[script]).toBeTypeOf("string");
     expect(packageJson.scripts["package:win"]).toBe("node scripts/run-builder.mjs windows");
     expect(packageJson.scripts["package:mac"]).toBe("node scripts/run-builder.mjs macos");
     expect(packageJson.scripts["package:linux"]).toBe("node scripts/run-builder.mjs linux");
+    expect(packageJson.scripts["release:checksums"]).toBe("node scripts/release-artifacts.mjs checksums release/assembled");
   });
 
   it("documents the real pilot, production, verification, and manual DEB update boundaries", () => {
@@ -30,10 +33,15 @@ describe("effective electron-builder configuration", () => {
     for (const command of ["npm run verify", "npm run package:win", "npm run package:mac", "npm run package:linux", "npm run package:verify"]) expect(readme).toContain(command);
     expect(readme).toContain("CIVCOM_BUILD_MODE=pilot");
     expect(readme).toContain("--publish never");
-    expect(readme).toMatch(/unsigned pilot[^\n]+workflow artifact/i);
-    expect(readme).toMatch(/never[^\n]+unsigned[^\n]+public GitHub Release/i);
-    expect(readme).toMatch(/production[^\n]+signed[^\n]+notarized/i);
-    expect(readme).toMatch(/DEB[^\n]+manual update/i);
+    expect(readme).toMatch(/niepodpisany pilot[^\n]+artefakt[a-ząćęłńóśźż]* workflow/i);
+    expect(readme).toMatch(/nigdy[^\n]+niepodpisanego[^\n]+publicznego wydania GitHub/i);
+    expect(readme).toMatch(/artefakty produkcyjne[^\n]+podpisane[^\n]+notaryzowane/i);
+    expect(readme).toMatch(/aktualizacja DEB[^\n]+ręczna/i);
+    expect(readme).toContain("Get-FileHash");
+    expect(readme).toContain("md5sum");
+    expect(readme).toContain("sha256sum");
+    expect(readme).toMatch(/Windows[^\n]+bez uprawnień administratora/i);
+    expect(readme).toContain("[procedura publikacji](docs/GITHUB-PUBLICATION.md)");
     for (const input of ["CIVCOM_WINDOWS_PUBLISHER_DN", "APPLE_TEAM_ID", "APPLE_API_KEY", "CIVCOM_LINUX_MAINTAINER"]) expect(readme).toContain(input);
   });
 

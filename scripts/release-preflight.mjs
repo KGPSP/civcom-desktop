@@ -21,6 +21,8 @@ export function inspectMainAncestry(run = spawnSync) {
 export async function runReleasePreflight(environment = process.env) {
   const packageMetadata = JSON.parse(await readFile(resolve(projectRoot, "package.json"), "utf8"));
   const lock = JSON.parse(await readFile(resolve(projectRoot, "package-lock.json"), "utf8"));
+  const releaseNotes = await readFile(resolve(projectRoot, "RELEASE_NOTES.md"), "utf8");
+  const releaseNotesVersion = /^# CivCom ([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)\n/.exec(releaseNotes)?.[1];
   if (lock.lockfileVersion !== 3 || lock.packages?.[""]?.version !== lock.version) throw new Error("Unsupported or inconsistent package lock");
   validateReleasePreflight({
     eventName: environment.GITHUB_EVENT_NAME,
@@ -32,6 +34,7 @@ export async function runReleasePreflight(environment = process.env) {
     mainAncestor: inspectMainAncestry(),
     packageVersion: packageMetadata.version,
     lockVersion: lock.packages[""].version,
+    releaseNotesVersion,
     worktreeClean: git(["status", "--porcelain=v1", "--untracked-files=all"]) === "",
     buildMode: environment.CIVCOM_BUILD_MODE,
     repository: environment.GITHUB_REPOSITORY

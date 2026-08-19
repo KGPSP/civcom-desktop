@@ -32,7 +32,8 @@ const contract = Object.freeze({
     linuxDeb: "CivCom-Linux-x86_64.deb",
     linuxMetadata: "latest-linux.yml",
     buildSbom: "CivCom-build.spdx.json",
-    checksums: "SHA256SUMS"
+    checksums: "SHA256SUMS",
+    md5Checksums: "MD5SUMS"
   }
 });
 
@@ -85,7 +86,12 @@ describe("Polish static download page", () => {
     for (const directive of ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "object-src 'none'", "base-uri 'none'"]) expect(csp).toContain(directive);
     expect(html).toContain("Alternatywne pliki do pobrania");
     expect(html).toContain("CivCom-Linux-x86_64.deb");
+    expect(html).toMatch(/Windows[^<]+bez uprawnień administratora/i);
+    expect(html).toMatch(/AppImage[^<]+bez uprawnień administratora/i);
+    expect(html).toMatch(/DEB[^<]+uprawnień administratora/i);
     expect(html).toContain("SHA256SUMS");
+    expect(html).toContain("MD5SUMS");
+    expect(html).toContain("MD5 służy wyłącznie do wykrywania uszkodzeń podczas kopiowania");
     expect(html).toContain("CivCom-build.spdx.json");
     expect(html).not.toMatch(/analytics|googletag|fonts\.google|https?:\/\/(?!github\.com\/KGPSP\/civcom-desktop)/i);
     expect(html).not.toMatch(/<script(?![^>]+src=)/i);

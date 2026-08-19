@@ -35,7 +35,8 @@ const assets = Object.freeze({
   linuxDeb: "CivCom-Linux-x86_64.deb",
   linuxMetadata: "latest-linux.yml",
   buildSbom: "CivCom-build.spdx.json",
-  checksums: "SHA256SUMS"
+  checksums: "SHA256SUMS",
+  md5Checksums: "MD5SUMS"
 });
 
 const contract = Object.freeze({ schemaVersion: 1, releaseBaseUrl: "https://github.com/KGPSP/civcom-desktop/releases/latest/download", latestReleaseUrl: "https://github.com/KGPSP/civcom-desktop/releases/latest", assets });
@@ -44,10 +45,10 @@ const sha = "a".repeat(40);
 describe("protected release automation", () => {
   it("accepts only a protected push tag matching package/lock versions, exact SHA, clean tree, and production mode", async () => {
     const { validateReleasePreflight } = await loadModule();
-    const valid = { eventName: "push", refType: "tag", refName: "v0.1.0", refProtected: "true", githubSha: sha, headSha: sha, mainAncestor: true, packageVersion: "0.1.0", lockVersion: "0.1.0", worktreeClean: true, buildMode: "production", repository: "KGPSP/civcom-desktop" };
+    const valid = { eventName: "push", refType: "tag", refName: "v0.1.0", refProtected: "true", githubSha: sha, headSha: sha, mainAncestor: true, packageVersion: "0.1.0", lockVersion: "0.1.0", releaseNotesVersion: "0.1.0", worktreeClean: true, buildMode: "production", repository: "KGPSP/civcom-desktop" };
     expect(() => validateReleasePreflight(valid)).not.toThrow();
     for (const changed of [
-      { refProtected: "false" }, { refName: "v0.2.0" }, { githubSha: "b".repeat(40) }, { lockVersion: "0.2.0" },
+      { refProtected: "false" }, { refName: "v0.2.0" }, { githubSha: "b".repeat(40) }, { lockVersion: "0.2.0" }, { releaseNotesVersion: "0.2.0" },
       { mainAncestor: false }, { worktreeClean: false }, { buildMode: "pilot" }, { eventName: "workflow_dispatch" }, { repository: "attacker/fork" }
     ]) expect(() => validateReleasePreflight({ ...valid, ...changed })).toThrow();
   });
@@ -105,7 +106,7 @@ describe("protected release automation", () => {
       }
     }
     await expect(assembleRelease(incoming, output, contract)).resolves.toBeUndefined();
-    expect((await readdir(output)).sort()).toEqual(Object.values(assets).filter((name) => name !== assets.buildSbom && name !== assets.checksums).sort());
+    expect((await readdir(output)).sort()).toEqual(Object.values(assets).filter((name) => name !== assets.buildSbom && name !== assets.checksums && name !== assets.md5Checksums).sort());
     expect(await readFile(join(output, assets.linuxDeb), "utf8")).toBe(`linux:${assets.linuxDeb}`);
     await expect(assembleRelease(incoming, output, contract)).rejects.toThrow();
   });
@@ -139,11 +140,14 @@ describe("protected release automation", () => {
 
   it("builds only a gated draft, verify-draft, or final publish command plan with publish last", async () => {
     const { createPublicationPlan } = await loadModule();
-    const context = { githubActions: "true", allowPublication: "confirmed", eventName: "push", refType: "tag", refName: "v0.1.0", refProtected: "true", repository: "KGPSP/civcom-desktop", packageVersion: "0.1.0", releaseDirectory: "/tmp/assembled", assetNames: Object.values(assets) };
+    const context = { githubActions: "true", allowPublication: "confirmed", eventName: "push", refType: "tag", refName: "v0.1.0", refProtected: "true", repository: "KGPSP/civcom-desktop", packageVersion: "0.1.0", releaseDirectory: "/tmp/assembled", releaseNotesPath: "/tmp/RELEASE_NOTES.md", assetNames: Object.values(assets) };
     const draft = createPublicationPlan("draft", context);
     expect(draft.commands).toHaveLength(1);
     expect(draft.commands[0]?.args).toContain("--draft");
     expect(draft.commands[0]?.args).toContain("--latest=false");
+    expect(draft.commands[0]?.args).toContain("--notes-file");
+    expect(draft.commands[0]?.args).toContain("/tmp/RELEASE_NOTES.md");
+    expect(draft.commands[0]?.args).not.toContain("--notes");
     const verify = createPublicationPlan("verify-draft", context);
     expect(verify.commands.map(({ args }) => args.join(" ")).join("\n")).not.toContain("--draft=false");
     const publish = createPublicationPlan("publish", context);

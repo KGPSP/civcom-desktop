@@ -11,6 +11,7 @@ type ReleaseContractModule = Readonly<{
   verifyReleaseDirectory(directory: string, contract: unknown, options?: Readonly<{ expectedVersion?: string }>): Promise<void>;
   parseUpdateMetadata(text: string, expectedFilenames: string | readonly string[], expectedVersion: string): Readonly<Record<string, unknown>>;
   createSha256Manifest(directory: string, filenames: readonly string[]): Promise<string>;
+  createMd5Manifest(directory: string, filenames: readonly string[]): Promise<string>;
   verifyIdenticalReleaseDirectories(localDirectory: string, remoteDirectory: string, contract: unknown): Promise<void>;
   resolveExpectedAppVersion(packageMetadata: unknown, packageLock: unknown): string;
   validateBuildSbom(value: unknown, expectedAppVersion: string): void;
@@ -32,7 +33,8 @@ const expectedAssets = Object.freeze({
   linuxDeb: "CivCom-Linux-x86_64.deb",
   linuxMetadata: "latest-linux.yml",
   buildSbom: "CivCom-build.spdx.json",
-  checksums: "SHA256SUMS"
+  checksums: "SHA256SUMS",
+  md5Checksums: "MD5SUMS"
 });
 
 function contractValue(assets: Record<string, unknown> = { ...expectedAssets }): unknown {
@@ -61,20 +63,26 @@ async function populatedRelease(): Promise<string> {
       : filename === "latest-mac.yml" ? metadata(expectedAssets.macZip)
       : filename === "latest-linux.yml" ? metadata([expectedAssets.linuxAppImage, expectedAssets.linuxDeb])
       : filename === "CivCom-build.spdx.json" ? JSON.stringify({ spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0", name: "CivCom npm lockfile and build supply chain", packages: requiredSbomPackages })
-      : filename === "SHA256SUMS" ? "pending"
+      : filename === "SHA256SUMS" || filename === "MD5SUMS" ? "pending"
       : "payload";
     await writeFile(join(root, filename), contents);
   }
-  const lines: string[] = [];
-  for (const filename of Object.values(expectedAssets).filter((name) => name !== expectedAssets.checksums).sort()) {
-    const digest = createHash("sha256").update(await readFile(join(root, filename))).digest("hex");
-    lines.push(`${digest}  ${filename}`);
-  }
-  await writeFile(join(root, expectedAssets.checksums), `${lines.join("\n")}\n`);
+  const payloadNames = Object.values(expectedAssets).filter((name) => name !== expectedAssets.checksums && name !== expectedAssets.md5Checksums).sort();
+  const manifest = async (algorithm: "sha256" | "md5"): Promise<string> => `${(await Promise.all(payloadNames.map(async (filename) => `${createHash(algorithm).update(await readFile(join(root, filename))).digest("hex")}  ${filename}`))).join("\n")}\n`;
+  await writeFile(join(root, expectedAssets.checksums), await manifest("sha256"));
+  await writeFile(join(root, expectedAssets.md5Checksums), await manifest("md5"));
   return root;
 }
 
 describe("canonical release contract", () => {
+  it("publishes a canonical MD5 manifest beside the stronger SHA-256 manifest", async () => {
+    const { loadReleaseContract } = await loadModule();
+    const actual = JSON.parse(await readFile(new URL("../docs/downloads.json", import.meta.url), "utf8")) as unknown;
+    const contract = loadReleaseContract(actual);
+    expect(contract.assets.md5Checksums).toBe("MD5SUMS");
+    expect(contract.orderedAssets.at(-1)).toBe("MD5SUMS");
+  });
+
   it("loads the checked-in canonical filenames in deterministic order", async () => {
     const { loadReleaseContract } = await loadModule();
     const actual = JSON.parse(await readFile(new URL("../docs/downloads.json", import.meta.url), "utf8")) as unknown;
@@ -151,11 +159,13 @@ describe("canonical release contract", () => {
   });
 
   it("recomputes every updater payload SHA-512 and size instead of trusting self-consistent metadata text", async () => {
-    const { createSha256Manifest, loadReleaseContract, verifyReleaseDirectory } = await loadModule();
+    const { createMd5Manifest, createSha256Manifest, loadReleaseContract, verifyReleaseDirectory } = await loadModule();
     const root = await populatedRelease();
     await writeFile(join(root, expectedAssets.windowsInstaller), "PAYLOAD");
     const contract = loadReleaseContract(contractValue());
-    await writeFile(join(root, expectedAssets.checksums), await createSha256Manifest(root, contract.orderedAssets.filter((name) => name !== expectedAssets.checksums)));
+    const payloadNames = contract.orderedAssets.filter((name) => name !== expectedAssets.checksums && name !== expectedAssets.md5Checksums);
+    await writeFile(join(root, expectedAssets.checksums), await createSha256Manifest(root, payloadNames));
+    await writeFile(join(root, expectedAssets.md5Checksums), await createMd5Manifest(root, payloadNames));
     await expect(verifyReleaseDirectory(root, contractValue(), { expectedVersion: "0.1.0" })).rejects.toThrow();
   });
 
@@ -170,15 +180,46 @@ describe("canonical release contract", () => {
     );
   });
 
+  it("generates a sorted MD5 transport-integrity manifest without shell interpolation", async () => {
+    const { createMd5Manifest } = await loadModule();
+    const root = await mkdtemp(join(tmpdir(), "civcom-md5-checksum-"));
+    await writeFile(join(root, "b.bin"), "b");
+    await writeFile(join(root, "a.bin"), "a");
+    await expect(createMd5Manifest(root, ["b.bin", "a.bin"])).resolves.toBe(
+      "0cc175b9c0f1b6a831c399e269772661  a.bin\n" +
+      "92eb5ffee6ae2fec3ad71c777531578f  b.bin\n"
+    );
+  });
+
+  it("rejects either checksum manifest as digest input to avoid circular manifests", async () => {
+    const { createMd5Manifest, createSha256Manifest } = await loadModule();
+    const root = await mkdtemp(join(tmpdir(), "civcom-circular-checksum-"));
+    await writeFile(join(root, expectedAssets.checksums), "placeholder");
+    await writeFile(join(root, expectedAssets.md5Checksums), "placeholder");
+    for (const filenames of [[expectedAssets.checksums], [expectedAssets.md5Checksums]]) {
+      await expect(createSha256Manifest(root, filenames)).rejects.toThrow();
+      await expect(createMd5Manifest(root, filenames)).rejects.toThrow();
+    }
+  });
+
+  it("rejects an MD5 manifest that does not match the canonical release payloads", async () => {
+    const { verifyReleaseDirectory } = await loadModule();
+    const root = await populatedRelease();
+    await writeFile(join(root, expectedAssets.md5Checksums), `${"0".repeat(32)}  ${expectedAssets.windowsInstaller}\n`);
+    await expect(verifyReleaseDirectory(root, contractValue(), { expectedVersion: "0.1.0" })).rejects.toThrow(/MD5SUMS/);
+  });
+
   it("requires every downloaded draft asset to be byte-identical to the locally verified release", async () => {
-    const { createSha256Manifest, loadReleaseContract, verifyIdenticalReleaseDirectories } = await loadModule();
+    const { createMd5Manifest, createSha256Manifest, loadReleaseContract, verifyIdenticalReleaseDirectories } = await loadModule();
     const local = await populatedRelease();
     const remote = await populatedRelease();
     await expect(verifyIdenticalReleaseDirectories(local, remote, contractValue())).resolves.toBeUndefined();
 
     await writeFile(join(remote, expectedAssets.linuxDeb), "PAYLOAD");
     const contract = loadReleaseContract(contractValue());
-    await writeFile(join(remote, expectedAssets.checksums), await createSha256Manifest(remote, contract.orderedAssets.filter((name) => name !== expectedAssets.checksums)));
+    const payloadNames = contract.orderedAssets.filter((name) => name !== expectedAssets.checksums && name !== expectedAssets.md5Checksums);
+    await writeFile(join(remote, expectedAssets.checksums), await createSha256Manifest(remote, payloadNames));
+    await writeFile(join(remote, expectedAssets.md5Checksums), await createMd5Manifest(remote, payloadNames));
     await expect(verifyIdenticalReleaseDirectories(local, remote, contractValue())).rejects.toThrow();
   });
 

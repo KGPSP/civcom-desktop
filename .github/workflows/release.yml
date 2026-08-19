@@ -170,7 +170,7 @@ jobs:
           path: release/incoming
       - run: node scripts/assemble-release.mjs release/incoming release/assembled
       - run: npm run release:sbom
-      - run: npm run release:sha256
+      - run: npm run release:checksums
       - run: npm run release:verify
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

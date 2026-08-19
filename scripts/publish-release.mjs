@@ -8,6 +8,7 @@ import { loadReleaseContract, resolveExpectedAppVersion, verifyIdenticalReleaseD
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixedReleaseDirectory = join(projectRoot, "release", "assembled");
+const fixedReleaseNotesPath = join(projectRoot, "RELEASE_NOTES.md");
 const downloads = JSON.parse(await readFile(join(projectRoot, "docs", "downloads.json"), "utf8"));
 const contract = loadReleaseContract(downloads);
 const packageMetadata = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
@@ -32,6 +33,7 @@ function context() {
     repository: process.env.GITHUB_REPOSITORY,
     packageVersion: expectedAppVersion,
     releaseDirectory: fixedReleaseDirectory,
+    releaseNotesPath: fixedReleaseNotesPath,
     assetNames: contract.orderedAssets
   });
 }
@@ -61,6 +63,10 @@ export async function runPublication(mode, requestedDirectory) {
   const releaseDirectory = resolve(projectRoot, requestedDirectory);
   if (releaseDirectory !== fixedReleaseDirectory) throw new Error("Publication accepts only the fixed assembled release directory");
   await verifyReleaseDirectory(releaseDirectory, downloads, { expectedVersion: expectedAppVersion });
+  const notesMetadata = await lstat(fixedReleaseNotesPath);
+  if (!notesMetadata.isFile() || notesMetadata.isSymbolicLink() || notesMetadata.size <= 0 || notesMetadata.size > 64 * 1024) throw new Error("Invalid release notes file");
+  const notes = await readFile(fixedReleaseNotesPath, "utf8");
+  if (!notes.startsWith(`# CivCom ${expectedAppVersion}\n`)) throw new Error("Release notes version differs from the package version");
   const planContext = context();
   const plan = createPublicationPlan(mode, planContext);
   if (mode === "draft") {

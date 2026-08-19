@@ -29,4 +29,9 @@ describe("Polish manual acceptance matrix", () => {
   it("forbids sensitive evidence", () => {
     for (const value of ["nazwy użytkownika", "identyfikatora ani nazwy pokoju", "treści wiadomości", "nazwy pliku", "URL ani parametrów", "zrzutu ekranu zalogowanej sesji"]) expect(matrix).toContain(value);
   });
+
+  it("defines a narrow first-release bootstrap exception and requires the next signed update test", () => {
+    expect(matrix).toMatch(/v0\.1\.0[^\n]+C-18[^\n]+C-20[^\n]+N\/A/i);
+    expect(matrix).toMatch(/v0\.1\.1[^\n]+C-18[^\n]+C-20[^\n]+PASS/i);
+  });
 });

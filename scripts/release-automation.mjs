@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, readdir } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { loadReleaseContract } from "./release-contract.mjs";
 
 const PLATFORM_KEYS = Object.freeze({
@@ -12,7 +12,7 @@ const PUBLIC_ASSET_NAMES = Object.freeze([
   "CivCom-Windows-x64.exe", "CivCom-Windows-x64.exe.blockmap", "latest.yml",
   "CivCom-macOS-universal.dmg", "CivCom-macOS-universal.zip", "CivCom-macOS-universal.zip.blockmap", "latest-mac.yml",
   "CivCom-Linux-x86_64.AppImage", "CivCom-Linux-x86_64.deb", "latest-linux.yml",
-  "CivCom-build.spdx.json", "SHA256SUMS"
+  "CivCom-build.spdx.json", "SHA256SUMS", "MD5SUMS"
 ]);
 
 function plainRecord(value, message) {
@@ -35,7 +35,7 @@ export function validateReleasePreflight(inputValue) {
   exactString(input.buildMode, "production", "Production build mode is required");
   if (input.worktreeClean !== true) throw new Error("Production release worktree is not clean");
   if (typeof input.packageVersion !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(input.packageVersion)) throw new Error("Invalid package version");
-  if (input.lockVersion !== input.packageVersion || input.refName !== `v${input.packageVersion}`) throw new Error("Tag, package, and lock versions differ");
+  if (input.lockVersion !== input.packageVersion || input.releaseNotesVersion !== input.packageVersion || input.refName !== `v${input.packageVersion}`) throw new Error("Tag, package, lock, and release notes versions differ");
   if (typeof input.githubSha !== "string" || !/^[0-9a-f]{40}$/.test(input.githubSha) || input.headSha !== input.githubSha) throw new Error("Tagged workflow SHA differs from checkout HEAD");
   if (input.mainAncestor !== true) throw new Error("Tagged workflow SHA is not reachable from origin/main");
 }
@@ -70,7 +70,7 @@ export async function stagePlatformArtifacts(sourceDirectory, outputDirectory, p
 export async function assembleRelease(inputDirectory, outputDirectory, contractValue) {
   if (typeof inputDirectory !== "string" || typeof outputDirectory !== "string" || !isAbsolute(inputDirectory) || !isAbsolute(outputDirectory) || inputDirectory === outputDirectory) throw new Error("Assembly directories must be distinct absolute paths");
   const contract = loadReleaseContract(contractValue);
-  const platformNames = new Set(Object.entries(contract.assets).filter(([key]) => key !== "buildSbom" && key !== "checksums").map(([, name]) => name));
+  const platformNames = new Set(Object.entries(contract.assets).filter(([key]) => key !== "buildSbom" && key !== "checksums" && key !== "md5Checksums").map(([, name]) => name));
   const found = new Map();
   const incomingMetadata = await lstat(inputDirectory);
   if (!incomingMetadata.isDirectory() || incomingMetadata.isSymbolicLink()) throw new Error("Invalid incoming release directory");
@@ -105,11 +105,12 @@ export function createPublicationPlan(mode, inputValue) {
   for (const [key, expected] of [["githubActions", "true"], ["allowPublication", "confirmed"], ["eventName", "push"], ["refType", "tag"], ["refProtected", "true"], ["repository", "KGPSP/civcom-desktop"]]) exactString(input[key], expected, `Invalid publication gate: ${key}`);
   if (typeof input.packageVersion !== "string" || input.refName !== `v${input.packageVersion}` || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(input.packageVersion)) throw new Error("Publication tag/version mismatch");
   if (typeof input.releaseDirectory !== "string" || !isAbsolute(input.releaseDirectory)) throw new Error("Publication directory must be absolute");
+  if (typeof input.releaseNotesPath !== "string" || !isAbsolute(input.releaseNotesPath) || basename(input.releaseNotesPath) !== "RELEASE_NOTES.md") throw new Error("Publication notes path must be the fixed release notes file");
   if (!Array.isArray(input.assetNames) || input.assetNames.length !== PUBLIC_ASSET_NAMES.length || input.assetNames.some((name, index) => name !== PUBLIC_ASSET_NAMES[index])) throw new Error("Publication assets do not match the canonical contract");
   const common = [input.refName, "--repo", input.repository];
   let commands;
   if (mode === "draft") {
-    commands = [{ command: "gh", args: ["release", "create", ...common, "--verify-tag", "--draft", "--latest=false", "--title", `CivCom ${input.refName}`, "--notes", "Pakiet instalacyjny CivCom.", ...input.assetNames.map((name) => join(input.releaseDirectory, name))] }];
+    commands = [{ command: "gh", args: ["release", "create", ...common, "--verify-tag", "--draft", "--latest=false", "--title", `CivCom ${input.refName}`, "--notes-file", input.releaseNotesPath, ...input.assetNames.map((name) => join(input.releaseDirectory, name))] }];
   } else if (mode === "verify-draft") {
     commands = [{ command: "gh", args: ["release", "view", ...common, "--json", "tagName,isDraft,isPrerelease,assets"] }];
   } else {

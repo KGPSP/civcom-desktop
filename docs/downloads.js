@@ -4,7 +4,7 @@
   var ASSET_KEYS = [
     "windowsInstaller", "windowsBlockmap", "windowsMetadata",
     "macDmg", "macZip", "macBlockmap", "macMetadata",
-    "linuxAppImage", "linuxDeb", "linuxMetadata", "buildSbom", "checksums"
+    "linuxAppImage", "linuxDeb", "linuxMetadata", "buildSbom", "checksums", "md5Checksums"
   ];
   var PRIMARY = { windows: "windowsInstaller", macos: "macDmg", linux: "linuxAppImage" };
   var LABELS = {
