@@ -3,12 +3,20 @@ import { sanitizeDownloadBasename } from "./shell.js";
 
 type SafeLog = (event: unknown) => void;
 
-function ownValue(input: unknown, key: string): unknown {
-  if (input === null || typeof input !== "object") return undefined;
+type DetailSnapshot = Readonly<{ kind: "ok"; securityOrigin?: unknown; requestingUrl?: unknown; mediaType?: unknown; mediaTypes?: unknown }> | Readonly<{ kind: "error" }>;
+
+function snapshotDetails(input: unknown): DetailSnapshot {
+  if (input === null || typeof input !== "object") return Object.freeze({ kind: "error" });
   try {
-    const descriptor = Object.getOwnPropertyDescriptor(input, key);
-    return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
-  } catch { return undefined; }
+    const values: Record<string, unknown> = {};
+    for (const key of ["securityOrigin", "requestingUrl", "mediaType", "mediaTypes"] as const) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (descriptor === undefined) continue;
+      if (!("value" in descriptor)) return Object.freeze({ kind: "error" });
+      values[key] = descriptor.value;
+    }
+    return Object.freeze({ kind: "ok", ...values });
+  } catch { return Object.freeze({ kind: "error" }); }
 }
 
 function trustedOrigin(value: unknown): string | undefined {
@@ -16,24 +24,24 @@ function trustedOrigin(value: unknown): string | undefined {
   return result.kind === "trusted" ? `https://${result.service}.soia.info/` : undefined;
 }
 
-function frameOrigin(details: unknown): string | undefined {
-  const values = [ownValue(details, "securityOrigin"), ownValue(details, "requestingUrl")]
+function frameOrigin(details: Extract<DetailSnapshot, { kind: "ok" }>): string | undefined {
+  const values = [details.securityOrigin, details.requestingUrl]
     .filter((value): value is string => typeof value === "string");
   if (values.length === 0) return undefined;
   const origins = values.map(trustedOrigin);
   return origins.some((origin) => origin === undefined) || new Set(origins).size !== 1 ? undefined : origins[0];
 }
 
-function checkOrigin(requestingOrigin: unknown, details: unknown): string | undefined {
+function checkOrigin(requestingOrigin: unknown, details: Extract<DetailSnapshot, { kind: "ok" }>): string | undefined {
   const origin = trustedOrigin(requestingOrigin);
   if (origin === undefined) return undefined;
   const fromDetails = frameOrigin(details);
-  const hasDetailOrigin = ownValue(details, "securityOrigin") !== undefined || ownValue(details, "requestingUrl") !== undefined;
+  const hasDetailOrigin = details.securityOrigin !== undefined || details.requestingUrl !== undefined;
   return !hasDetailOrigin || fromDetails === origin ? origin : undefined;
 }
 
-function mediaTypes(details: unknown, singular: boolean): readonly string[] | undefined {
-  const value = ownValue(details, singular ? "mediaType" : "mediaTypes");
+function mediaTypes(details: Extract<DetailSnapshot, { kind: "ok" }>, singular: boolean): readonly string[] | undefined {
+  const value = singular ? details.mediaType : details.mediaTypes;
   if (singular) return value === "audio" || value === "video" ? [value] : undefined;
   return Array.isArray(value) && value.length > 0 && value.every((entry) => entry === "audio" || entry === "video") ? value : undefined;
 }
@@ -42,13 +50,17 @@ export function createPermissionCallbacks(): Readonly<{
   check(permission: unknown, requestingOrigin: unknown, details: unknown): boolean;
   request(permission: unknown, details: unknown): boolean;
 }> {
-  const decide = (permission: unknown, origin: string | undefined, details: unknown, singular: boolean): boolean => {
+  const decide = (permission: unknown, origin: string | undefined, details: DetailSnapshot, singular: boolean): boolean => {
+    if (details.kind === "error") return false;
     if (origin === undefined) return false;
     const decision = authorizePermissionRequest({ origin, permission });
     if (decision.kind !== "allow") return false;
     return decision.permission !== "media" || mediaTypes(details, singular) !== undefined;
   };
-  return Object.freeze({ check: (permission, requestingOrigin, details) => decide(permission, checkOrigin(requestingOrigin, details), details, true), request: (permission, details) => decide(permission, frameOrigin(details), details, false) });
+  return Object.freeze({
+    check: (permission, requestingOrigin, details) => { const snapshot = snapshotDetails(details); return decide(permission, snapshot.kind === "ok" ? checkOrigin(requestingOrigin, snapshot) : undefined, snapshot, true); },
+    request: (permission, details) => { const snapshot = snapshotDetails(details); return decide(permission, snapshot.kind === "ok" ? frameOrigin(snapshot) : undefined, snapshot, false); }
+  });
 }
 
 export type Preventable = Readonly<{ preventDefault(): void }>;
