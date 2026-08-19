@@ -28,6 +28,15 @@ describe("GitHub automation policy", () => {
     await expect(validateRepositoryAutomation(new URL("..", import.meta.url).pathname)).resolves.toBeUndefined();
   });
 
+  it("rejects an incomplete Linux SUID sandbox setup before the anonymous Electron smoke", async () => {
+    const { validateWorkflowSource } = await loadModule();
+    const live = await readFile(new URL("../.github/workflows/anonymous-live-smoke.yml", import.meta.url), "utf8");
+    expect(() => validateWorkflowSource("anonymous-live-smoke.yml", live)).not.toThrow();
+    const weakened = live.replace("sudo chmod 4755", "sudo chmod 0755");
+    expect(weakened).not.toBe(live);
+    expect(() => validateWorkflowSource("anonymous-live-smoke.yml", weakened)).toThrow();
+  });
+
   it("pins runner images, scopes checkout jobs to contents read, handles the p8 as a temporary file, and verifies attestations", async () => {
     const { validateRepositoryAutomation } = await loadModule();
     const root = new URL("..", import.meta.url);

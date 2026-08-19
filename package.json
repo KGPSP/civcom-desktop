@@ -38,7 +38,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build && npm run verify:electron && node scripts/verify-workflows.mjs",
-    "verify:electron": "electron --version && node scripts/verify-electron-binary.mjs",
+    "verify:electron": "install-electron --no && node scripts/verify-electron-binary.mjs",
     "package:win": "node scripts/run-builder.mjs windows",
     "package:mac": "node scripts/run-builder.mjs macos",
     "package:linux": "node scripts/run-builder.mjs linux",

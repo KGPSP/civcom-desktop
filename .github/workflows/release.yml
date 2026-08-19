@@ -32,6 +32,19 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Configure Electron SUID sandbox on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -eu
+          workspace_path="$(realpath "$GITHUB_WORKSPACE")"
+          sandbox_path="$workspace_path/node_modules/electron/dist/chrome-sandbox"
+          test -f "$sandbox_path"
+          test ! -L "$sandbox_path"
+          test "$(realpath "$sandbox_path")" = "$sandbox_path"
+          sudo chown root:root -- "$sandbox_path"
+          sudo chmod 4755 -- "$sandbox_path"
+          test "$(stat -c '%u:%g:%a' "$sandbox_path")" = "0:0:4755"
       - run: npm run verify
       - run: xvfb-run -a npm run test:live:anonymous
       - run: node scripts/release-preflight.mjs
@@ -138,6 +151,19 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Configure Electron SUID sandbox on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -eu
+          workspace_path="$(realpath "$GITHUB_WORKSPACE")"
+          sandbox_path="$workspace_path/node_modules/electron/dist/chrome-sandbox"
+          test -f "$sandbox_path"
+          test ! -L "$sandbox_path"
+          test "$(realpath "$sandbox_path")" = "$sandbox_path"
+          sudo chown root:root -- "$sandbox_path"
+          sudo chmod 4755 -- "$sandbox_path"
+          test "$(stat -c '%u:%g:%a' "$sandbox_path")" = "0:0:4755"
       - run: npm run package:linux
       - run: npm run package:verify -- --mode production --target linux
       - run: node scripts/stage-platform-artifacts.mjs linux

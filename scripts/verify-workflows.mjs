@@ -12,6 +12,17 @@ const PINNED_ACTIONS = Object.freeze({
   "actions/attest-build-provenance": "977bb373ede98d70efdf65b84cb5f73e068dcc2a",
   "actions/attest-sbom": "4651f806c01d8637787e274ac3bdf724ef169f34"
 });
+const LINUX_SANDBOX_COMMAND = [
+  "set -eu",
+  "workspace_path=\"$(realpath \"$GITHUB_WORKSPACE\")\"",
+  "sandbox_path=\"$workspace_path/node_modules/electron/dist/chrome-sandbox\"",
+  "test -f \"$sandbox_path\"",
+  "test ! -L \"$sandbox_path\"",
+  "test \"$(realpath \"$sandbox_path\")\" = \"$sandbox_path\"",
+  "sudo chown root:root -- \"$sandbox_path\"",
+  "sudo chmod 4755 -- \"$sandbox_path\"",
+  "test \"$(stat -c '%u:%g:%a' \"$sandbox_path\")\" = \"0:0:4755\""
+].join("\n") + "\n";
 
 function record(value, message) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(message);
@@ -44,6 +55,18 @@ function commandText(workflow) {
   return steps(workflow).map((step) => typeof step.run === "string" ? step.run : "").join("\n");
 }
 
+function requireLinuxSandboxAfterInstall(jobValue) {
+  const job = record(jobValue, "Linux Electron job must be an object");
+  const jobSteps = steps({ jobs: { checked: job } });
+  const installIndex = jobSteps.findIndex((step) => step.run === "npm ci");
+  const sandbox = jobSteps[installIndex + 1];
+  if (installIndex < 0
+    || sandbox?.name !== "Configure Electron SUID sandbox on Linux"
+    || sandbox.if !== "runner.os == 'Linux'"
+    || sandbox.shell !== "bash"
+    || sandbox.run !== LINUX_SANDBOX_COMMAND) throw new Error("Linux Electron sandbox setup must immediately follow npm ci");
+}
+
 function validateTopLevel(workflow, source) {
   if (!Object.hasOwn(workflow, "on") || source.includes("pull_request_target") || /uses:\s*[^\s]+@(?![0-9a-f]{40}(?:\s|$))/.test(source)) throw new Error("Unsafe workflow trigger or action reference");
   const permissions = record(workflow.permissions, "Top-level permissions must be explicit");
@@ -65,6 +88,7 @@ function validateCi(workflow, source) {
   if (!Object.hasOwn(triggers, "push") || !Object.hasOwn(triggers, "pull_request") || /\$\{\{\s*secrets\./.test(source)) throw new Error("CI must be secret-free push and pull-request verification");
   const commands = commandText(workflow);
   if (!commands.includes("npm ci") || !commands.includes("npm run verify") || !commands.includes("xvfb-run -a npm run test:electron:local") || !source.includes("node-version: 24")) throw new Error("CI verification contract missing");
+  requireLinuxSandboxAfterInstall(record(workflow.jobs, "CI jobs missing").verify);
   if (/test:live:anonymous|test:manual:production/.test(source)) throw new Error("CI must remain local-only");
 }
 
@@ -86,7 +110,8 @@ function validateAnonymousLiveSmoke(workflow, source) {
   const environment = record(smoke.env, "Anonymous live opt-in missing");
   if (Object.keys(environment).join(",") !== "CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE" || environment.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE !== "confirmed") throw new Error("Anonymous live opt-in must be constant");
   const commands = steps({ jobs: { smoke } }).map((step) => step.run).filter((command) => typeof command === "string");
-  if (commands.length !== 2 || commands[0] !== "npm ci" || commands[1] !== "xvfb-run -a npm run test:live:anonymous" || !source.includes("node-version: 24")) throw new Error("Anonymous live command contract missing");
+  if (commands.length !== 3 || commands[0] !== "npm ci" || commands[1] !== LINUX_SANDBOX_COMMAND || commands[2] !== "xvfb-run -a npm run test:live:anonymous" || !source.includes("node-version: 24")) throw new Error("Anonymous live command contract missing");
+  requireLinuxSandboxAfterInstall(smoke);
   if (/pull_request|workflow_run|schedule|secrets\s*:|\$\{\{\s*secrets\.|secrets:\s*inherit|environment\s*:|upload-artifact|download-artifact|GITHUB_STEP_SUMMARY|\btrace\b|\bhar\b|\bretr(?:y|ies)\b|https?:\/\//i.test(source)) throw new Error("Anonymous live trust boundary widened");
 }
 
@@ -99,6 +124,7 @@ function validatePilot(workflow, source) {
   if (source.includes("windows-latest") || source.includes("ubuntu-latest") || !source.includes("windows-2025") || !source.includes("ubuntu-24.04")) throw new Error("Pilot runner images are not pinned");
   const jobs = record(workflow.jobs, "Pilot jobs missing");
   const packageJob = record(jobs.package, "Pilot package matrix missing");
+  requireLinuxSandboxAfterInstall(packageJob);
   const matrix = record(record(record(packageJob.strategy, "Pilot strategy missing").matrix, "Pilot matrix missing"), "Pilot matrix invalid");
   if (!Array.isArray(matrix.include) || matrix.include.length !== 3 || new Set(matrix.include.map((entry) => entry.target)).size !== 3) throw new Error("Pilot must cover three native targets");
 }
@@ -124,10 +150,12 @@ function validateRelease(workflow, source) {
   if (permissionKeys(record(jobs.publish, "Publication job missing").permissions).join(",") !== "contents") throw new Error("Publication permissions are not exact");
   const preflight = record(jobs.preflight, "Release preflight missing");
   const preflightCommands = steps({ jobs: { preflight } }).map((step) => step.run).filter((command) => typeof command === "string");
-  if (preflightCommands.join("\n") !== ["npm ci", "npm run verify", "xvfb-run -a npm run test:live:anonymous", "node scripts/release-preflight.mjs"].join("\n")) throw new Error("Release live preflight sequence missing");
+  if (preflightCommands.join("\n") !== ["npm ci", LINUX_SANDBOX_COMMAND, "npm run verify", "xvfb-run -a npm run test:live:anonymous", "node scripts/release-preflight.mjs"].join("\n")) throw new Error("Release live preflight sequence missing");
+  requireLinuxSandboxAfterInstall(preflight);
   const preflightEnvironment = record(preflight.env, "Release preflight environment missing");
   if (preflightEnvironment.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE !== "confirmed" || /\$\{\{\s*secrets\./.test(JSON.stringify(preflight))) throw new Error("Release preflight live smoke must be constant and secret-free");
   for (const name of ["build-windows", "build-macos", "build-linux"]) if (record(jobs[name], `Release build missing: ${name}`).needs !== "preflight") throw new Error(`Release build does not depend on live preflight: ${name}`);
+  requireLinuxSandboxAfterInstall(jobs["build-linux"]);
   const publishPermissions = record(record(jobs.publish, "Publication job missing").permissions, "Publication permissions missing");
   if (publishPermissions.contents !== "write") throw new Error("Final publication job requires contents write");
   const publication = commandText({ jobs: { publish: jobs.publish } });
