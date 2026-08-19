@@ -107,13 +107,13 @@ describe("packaged application verification policy", () => {
     expect(plan.deb).toEqual({
       command: "dpkg-deb",
       args: ["--extract", "/tmp/release/CivCom-Linux-x86_64.deb", "/tmp/inspect/deb"],
-      desktopFile: "/tmp/inspect/deb/usr/share/applications/info.soia.civcom.desktop.desktop"
+      desktopFile: "/tmp/inspect/deb/usr/share/applications/info.soia.civcom.desktop"
     });
     expect(plan.appImage).toEqual({
       command: "/tmp/release/CivCom-Linux-x86_64.AppImage",
       args: ["--appimage-extract"],
       cwd: "/tmp/inspect/appimage",
-      desktopFile: "/tmp/inspect/appimage/squashfs-root/info.soia.civcom.desktop.desktop"
+      desktopFile: "/tmp/inspect/appimage/squashfs-root/info.soia.civcom.desktop"
     });
     const common = [
       "[Desktop Entry]", "Name=CivCom", "Terminal=false", "Type=Application", "Icon=civcom",

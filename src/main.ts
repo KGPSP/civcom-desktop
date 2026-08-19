@@ -9,6 +9,7 @@ import { createPackagedSmokeResult, isPackagedSmokeRequested, packagedSmokeResul
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
 import { resolveStartUrl } from "./security/url-policy.js";
 import { installClientCertificateDenyHandler } from "./security/client-certificate.js";
+import { shouldRejectRuntimeSandbox } from "./security/runtime-sandbox.js";
 import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createTraySafely, createWindowCallbacks } from "./desktop/electron-adapters.js";
 import { DisplayMediaCoordinator } from "./screen-share/coordinator.js";
 import { watchFrameLifetime } from "./screen-share/frame-lifetime.js";
@@ -339,30 +340,41 @@ async function configureUpdater(logger: RotatingSafeLogger, packageType: Package
     unref: (handle) => { (handle as NodeJS.Timeout).unref(); }
   });
 }
-if (process.platform === "win32") app.setAppUserModelId("info.soia.civcom.desktop");
-if (!app.requestSingleInstanceLock()) app.quit(); else {
-  installClientCertificateDenyHandler(app);
-  app.on("second-instance", showMainWindow);
-  app.on("activate", showMainWindow);
-  app.on("certificate-error", (event, _contents, _url, _error, _certificate, callback) => { event.preventDefault(); callback(false); });
-  app.on("before-quit", () => { quitting = true; screenSharing?.shutdown(); updater?.stop(); lifecycleLogger?.lifecycle("stop"); });
-  void app.whenReady().then(async () => {
-    if (isPackagedSmokeRequested({ isPackaged: app.isPackaged, argv: process.argv })) {
-      mainWindow = createPackagedSmokeWindow();
-      return;
-    }
-    const startUrl = resolvedStartUrl();
-    if (startUrl === undefined) { app.quit(); return; }
-    const harness = unpackagedHarnessOptions();
-    const logger = createLogger();
-    const packageType = currentPackageType();
-    lifecycleLogger = logger;
-    logger.lifecycle("startup"); logger.lifecycle("version", app.getVersion());
-    configureSession(logger, harness); updater = await configureUpdater(logger, packageType);
-    if (harness === undefined) { createMenu(); trayAvailable = createTray(logger); }
-    else trayAvailable = false;
-    mainWindow = createWindow(startUrl, logger, harness);
-    if (harness === undefined) await promptForAutostart(packageType);
-    await updater.start();
-  });
+function hasLinuxNoSandboxSwitch(): boolean {
+  if (process.platform !== "linux") return false;
+  try { return app.commandLine.hasSwitch("no-sandbox"); } catch { return true; }
+}
+const runtimeSandboxRejected = shouldRejectRuntimeSandbox({ platform: process.platform, argv: process.argv, noSandboxSwitch: hasLinuxNoSandboxSwitch() });
+if (runtimeSandboxRejected) {
+  app.exit(1);
+} else {
+  if (process.platform === "win32") app.setAppUserModelId("info.soia.civcom.desktop");
+  if (!app.requestSingleInstanceLock()) {
+    app.quit();
+  } else {
+    installClientCertificateDenyHandler(app);
+    app.on("second-instance", showMainWindow);
+    app.on("activate", showMainWindow);
+    app.on("certificate-error", (event, _contents, _url, _error, _certificate, callback) => { event.preventDefault(); callback(false); });
+    app.on("before-quit", () => { quitting = true; screenSharing?.shutdown(); updater?.stop(); lifecycleLogger?.lifecycle("stop"); });
+    void app.whenReady().then(async () => {
+      if (isPackagedSmokeRequested({ isPackaged: app.isPackaged, argv: process.argv })) {
+        mainWindow = createPackagedSmokeWindow();
+        return;
+      }
+      const startUrl = resolvedStartUrl();
+      if (startUrl === undefined) { app.quit(); return; }
+      const harness = unpackagedHarnessOptions();
+      const logger = createLogger();
+      const packageType = currentPackageType();
+      lifecycleLogger = logger;
+      logger.lifecycle("startup"); logger.lifecycle("version", app.getVersion());
+      configureSession(logger, harness); updater = await configureUpdater(logger, packageType);
+      if (harness === undefined) { createMenu(); trayAvailable = createTray(logger); }
+      else trayAvailable = false;
+      mainWindow = createWindow(startUrl, logger, harness);
+      if (harness === undefined) await promptForAutostart(packageType);
+      await updater.start();
+    });
+  }
 }

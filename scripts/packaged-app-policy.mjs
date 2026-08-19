@@ -1,7 +1,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 
-const LINUX_DESKTOP_FILE = "info.soia.civcom.desktop.desktop";
+const LINUX_DESKTOP_FILE = "info.soia.civcom.desktop";
 const LINUX_APP_IMAGE = "CivCom-Linux-x86_64.AppImage";
 const LINUX_DEB = "CivCom-Linux-x86_64.deb";
 

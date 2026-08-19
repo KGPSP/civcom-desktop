@@ -70,4 +70,13 @@ describe("Electron main-process integration contract", () => {
     expect(main).toContain("process.resourcesPath");
     expect(main).toContain("packageType");
   });
+
+  it("rejects a Linux sandbox bypass before taking the single-instance lock", () => {
+    const guard = main.indexOf("const runtimeSandboxRejected = shouldRejectRuntimeSandbox");
+    const lock = main.indexOf("app.requestSingleInstanceLock()");
+    expect(guard).toBeGreaterThanOrEqual(0);
+    expect(main).toContain('app.commandLine.hasSwitch("no-sandbox")');
+    expect(main).toContain("app.exit(1)");
+    expect(guard).toBeLessThan(lock);
+  });
 });
