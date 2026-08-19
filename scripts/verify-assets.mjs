@@ -2,6 +2,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { extname, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, URL } from "node:url";
+import { Buffer } from "node:buffer";
 import { SaxesParser } from "saxes";
 
 const assetDirectory = fileURLToPath(new URL("../assets/", import.meta.url));
@@ -26,6 +27,13 @@ const pathCommand = /[MmZzLlHhVvCcSsQqTtAa]/;
 const plainLabel = /^[\p{L}\p{N}\p{Zs}.,:;!?'()-]{1,120}$/u;
 const xmlEntityReference = /&(?:#\d+|#x[\da-f]+|[a-z][\w.-]*);/i;
 const xmlDtd = /<!DOCTYPE\b|<!ENTITY\b/i;
+const requiredRasterSizes = new Map([["civcom-tray.png", 44], ["civcom-tray@2x.png", 88]]);
+
+function pngSize(contents) {
+  return contents.length >= 24 && contents.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    ? { width: contents.readUInt32BE(16), height: contents.readUInt32BE(20) }
+    : undefined;
+}
 
 function parseNumber(value) {
   if (!numberPattern.test(value)) {
@@ -220,7 +228,9 @@ export function isSafeSvgContent(content) {
 }
 
 export async function verifyAssetDirectory(directory = assetDirectory) {
+  const seen = new Set();
   for (const entry of await readdir(directory, { withFileTypes: true })) {
+    seen.add(entry.name);
     const location = join(directory, entry.name);
     const metadata = await lstat(location);
 
@@ -243,7 +253,13 @@ export async function verifyAssetDirectory(directory = assetDirectory) {
         throw new Error(`SVG must be static, self-contained, and non-executable: ${relative(assetDirectory, location)}`);
       }
     }
+    const expectedSize = requiredRasterSizes.get(entry.name);
+    if (expectedSize !== undefined) {
+      const dimensions = pngSize(await readFile(location));
+      if (dimensions === undefined || dimensions.width !== expectedSize || dimensions.height !== expectedSize) throw new Error(`Invalid tray raster derivative: ${entry.name}`);
+    }
   }
+  if (resolve(directory) === resolve(assetDirectory)) for (const name of requiredRasterSizes.keys()) if (!seen.has(name)) throw new Error(`Missing required tray raster derivative: ${name}`);
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === thisFile) {

@@ -3,6 +3,7 @@ import { PRODUCTION_CIVCOM_URL } from "../src/security/url-policy.js";
 import {
   APP_START_HIDDEN_ARG,
   BoundsStore,
+  normalizeBounds,
   createFirstRunState,
   createOfflinePageUrl,
   createPermissionGate,
@@ -69,7 +70,7 @@ describe("desktop shell policy", () => {
       promptAutostart: false,
       preferences: { autostartPrompted: true, autostartEnabled: true }
     });
-    expect(makeLoginItemSettings("darwin", true)).toEqual({ openAtLogin: true, openAsHidden: true, args: ["--hidden"] });
+    expect(makeLoginItemSettings("darwin", true)).toEqual({ openAtLogin: true, enabled: true, args: ["--hidden"] });
     expect(makeLoginItemSettings("win32", false)).toEqual({ openAtLogin: false, args: ["--hidden"] });
   });
 
@@ -86,7 +87,7 @@ describe("desktop shell policy", () => {
     storage.set("bounds", JSON.stringify(valid));
     expect(store.load([area])).toEqual(valid);
     storage.set("bounds", JSON.stringify({ x: 99999, y: 1, width: 100, height: 100 }));
-    expect(store.load([area])).toBeUndefined();
+    expect(store.load([area])).toEqual({ x: 1600, y: 1, width: 320, height: 240 });
     store.save(valid, [area]);
     expect(writes).toEqual([JSON.stringify(valid)]);
     expect(writes[0]).not.toContain("url");
@@ -105,6 +106,16 @@ describe("desktop shell policy", () => {
     expect(sanitizeDownloadBasename("CON")).toBeUndefined();
     const existing = new Set(["/Downloads/raport.pdf", "/Downloads/raport (1).pdf"]);
     await expect(resolveDownloadDestination("/Downloads", "raport.pdf", (path) => existing.has(path))).resolves.toBe("/Downloads/raport (2).pdf");
+    await expect(resolveDownloadDestination("C:\\Downloads", "raport.pdf", () => false, { isAbsolute: (path) => /^[A-Z]:\\/i.test(path), join: (directory, filename) => `${directory}\\${filename}` })).resolves.toBe("C:\\Downloads\\raport.pdf");
+    expect(sanitizeDownloadBasename("trailing. ")).toBeUndefined();
+    expect(sanitizeDownloadBasename("x".repeat(241))).toBeUndefined();
+  });
+
+  it("clamps restored bounds to the display with the greatest intersection or a surviving display", () => {
+    const left = { x: -1000, y: 0, width: 1000, height: 800 };
+    const main = { x: 0, y: 0, width: 1200, height: 900 };
+    expect(normalizeBounds({ x: -20, y: 10, width: 1000, height: 700 }, [left, main])).toEqual({ x: 0, y: 10, width: 1000, height: 700 });
+    expect(normalizeBounds({ x: 99999, y: 9, width: 9000, height: 9000 }, [main])).toEqual({ x: 0, y: 0, width: 1200, height: 900 });
   });
 });
 
@@ -126,6 +137,11 @@ describe("safe local logging", () => {
     expect(output).not.toContain("secret");
     expect(output).not.toContain("token");
     expect(output).not.toContain("abc");
+  });
+
+  it("never throws when log storage fails and rotates by UTF-8 byte length", () => {
+    const logger = new RotatingSafeLogger({ maxBytes: 4, maxFiles: 2, now: () => new Date(), read: () => { throw new Error("disk"); }, write: () => { throw new Error("disk"); }, remove: () => { throw new Error("disk"); } });
+    expect(() => logger.lifecycle("startup", "ż")).not.toThrow();
   });
 });
 

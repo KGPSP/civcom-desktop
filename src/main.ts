@@ -1,10 +1,12 @@
 import { app, BrowserWindow, dialog, Menu, nativeImage, screen, session, shell, Tray, type MenuItemConstructorOptions } from "electron";
 import electronUpdater from "electron-updater";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { APPROVED_DOWNLOAD_PAGE, BoundsStore, createFirstRunState, createOfflinePageUrl, createPermissionGate, createRuntimeNavigationGate, createWebPreferences, isHiddenStart, makeLoginItemSettings, resolveDownloadDestination, UpdateScheduler } from "./desktop/shell.js";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { dirname, join, posix, win32 } from "node:path";
+import { APPROVED_DOWNLOAD_PAGE, BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, isHiddenStart, makeLoginItemSettings, reserveDownloadDestination, UpdateScheduler } from "./desktop/shell.js";
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
 import { resolveStartUrl } from "./security/url-policy.js";
+import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createWindowCallbacks } from "./desktop/electron-adapters.js";
 
 const { autoUpdater } = electronUpdater;
 
@@ -12,12 +14,14 @@ let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
 let updater: UpdateScheduler | undefined;
+let activationPending = false;
+const downloadReservations = new Set<string>();
+let lifecycleLogger: RotatingSafeLogger | undefined;
 
 function writeAtomic(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.tmp`;
-  writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600 });
-  renameSync(temporary, path);
+  const temporary = `${path}.${randomBytes(12).toString("hex")}.tmp`;
+  try { writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600, flag: "wx" }); renameSync(temporary, path); } finally { try { rmSync(temporary); } catch { /* renamed or absent */ } }
 }
 function readOptional(path: string): string | undefined { try { return readFileSync(path, "utf8"); } catch { return undefined; } }
 function createLogger(): RotatingSafeLogger {
@@ -53,16 +57,15 @@ function applyLoginStartup(enabled: boolean): void {
     const xdgConfig = process.env.XDG_CONFIG_HOME;
     const path = join(xdgConfig !== undefined && xdgConfig.startsWith("/") ? xdgConfig : join(app.getPath("home"), ".config"), "autostart", "civcom.desktop");
     if (!enabled) { try { rmSync(path); } catch { /* already disabled */ } return; }
-    const executable = process.execPath.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    const executable = process.execPath.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
     writeAtomic(path, `[Desktop Entry]\nType=Application\nName=CivCom\nExec="${executable}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
     return;
   }
   const settings = makeLoginItemSettings(process.platform, enabled);
-  app.setLoginItemSettings(settings.openAsHidden === undefined
-    ? { openAtLogin: settings.openAtLogin, args: [...settings.args] }
-    : { openAtLogin: settings.openAtLogin, openAsHidden: settings.openAsHidden, args: [...settings.args] });
+  app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, args: [...settings.args], ...(settings.enabled === undefined ? {} : { enabled: settings.enabled }) });
 }
 async function promptForAutostart(): Promise<void> {
+  if (!app.isPackaged) return;
   const state = createFirstRunState(readPreferences());
   if (!state.promptAutostart) return;
   const response = await dialog.showMessageBox({ type: "question", buttons: ["Włącz", "Nie włączaj"], defaultId: 0, cancelId: 1, title: "CivCom", message: "Czy włączać automatyczne uruchamianie CivCom po zalogowaniu do systemu?" });
@@ -70,8 +73,8 @@ async function promptForAutostart(): Promise<void> {
   applyLoginStartup(enabled);
   writePreferences(Object.freeze({ autostartPrompted: true, autostartEnabled: enabled }));
 }
-function showMainWindow(): void { if (mainWindow !== undefined && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } }
-function quitApplication(): void { quitting = true; updater?.stop(); app.quit(); }
+function showMainWindow(): void { if (mainWindow === undefined || mainWindow.isDestroyed()) { activationPending = true; return; } mainWindow.show(); mainWindow.focus(); }
+function quitApplication(): void { quitting = true; updater?.stop(); lifecycleLogger?.lifecycle("stop"); app.quit(); }
 function createMenu(): void {
   const template: MenuItemConstructorOptions[] = [
     { label: "CivCom", submenu: [{ label: "Pokaż CivCom", click: showMainWindow }, { label: "Ukryj CivCom", click: () => mainWindow?.hide() }, { type: "separator" }, { label: "Sprawdź aktualizacje", click: () => { void updater?.manual(); } }, { type: "separator" }, { label: "Zakończ CivCom", click: quitApplication }] },
@@ -80,36 +83,41 @@ function createMenu(): void {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
-function createTray(): void {
-  tray = new Tray(nativeImage.createFromPath(join(app.getAppPath(), "assets", "civcom.svg")));
+function createTray(logger: RotatingSafeLogger): void {
+  const icon = nativeImage.createFromPath(join(app.getAppPath(), "assets", "civcom-tray.png"));
+  if (icon.isEmpty()) { logger.write({ event: "security-event", code: "UNCLASSIFIED" }); return; }
+  tray = new Tray(icon);
   tray.setToolTip("CivCom");
   tray.setContextMenu(Menu.buildFromTemplate([{ label: "Pokaż CivCom", click: showMainWindow }, { label: "Ukryj CivCom", click: () => mainWindow?.hide() }, { type: "separator" }, { label: "Sprawdź aktualizacje", click: () => { void updater?.manual(); } }, { type: "separator" }, { label: "Zakończ CivCom", click: quitApplication }]));
   tray.on("click", showMainWindow);
 }
-function mediaTypesFrom(details: unknown): unknown {
-  if (details === null || typeof details !== "object") return undefined;
-  const descriptor = Object.getOwnPropertyDescriptor(details, "mediaTypes");
-  return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
-}
 function configureSession(): Electron.Session {
   const civcomSession = session.fromPartition("persist:civcom");
-  const permission = createPermissionGate();
-  civcomSession.setPermissionCheckHandler((_contents, name, origin, details) => permission({ origin, permission: name, mediaTypes: mediaTypesFrom(details) }));
-  civcomSession.setPermissionRequestHandler((contents, name, callback, details) => callback(permission({ origin: contents.getURL(), permission: name, mediaTypes: mediaTypesFrom(details) })));
+  const permission = createPermissionCallbacks();
+  civcomSession.setPermissionCheckHandler((_contents, name, _origin, details) => permission.check(name, details));
+  civcomSession.setPermissionRequestHandler((_contents, name, callback, details) => callback(permission.request(name, details)));
   civcomSession.setDevicePermissionHandler(() => false);
   // Task 4 installs setDisplayMediaRequestHandler; this shell never selects a capture source.
   return civcomSession;
 }
 function configureDownloads(contents: Electron.WebContents, logger: RotatingSafeLogger): void {
   contents.session.on("will-download", (_event, item) => {
+    const urls = item.getURLChain();
+    if (!authorizeDownloadRequest(contents.getURL(), urls, item.getFilename())) { item.cancel(); logger.write({ event: "download-denied", code: "UNCLASSIFIED" }); return; }
     item.pause();
-    void resolveDownloadDestination(app.getPath("downloads"), item.getFilename(), existsSync).then((destination) => {
+    const pathApi = process.platform === "win32" ? win32 : posix;
+    void reserveDownloadDestination(app.getPath("downloads"), item.getFilename(), (candidate) => {
+      if (downloadReservations.has(candidate)) return false;
+      try { const descriptor = openSync(candidate, "wx", 0o600); closeSync(descriptor); downloadReservations.add(candidate); return true; } catch { return false; }
+    }, pathApi).then((destination) => {
       if (destination === undefined) { item.cancel(); logger.write({ event: "download-denied", code: "UNCLASSIFIED" }); return; }
-      item.setSavePath(destination);
-      let bucket = -1;
-      item.on("updated", (_updateEvent, state) => { const total = item.getTotalBytes(); const next = total > 0 ? Math.min(10, Math.floor(item.getReceivedBytes() * 10 / total)) : 0; if (next !== bucket) { bucket = next; void state; } });
-      item.once("done", (_doneEvent, state) => logger.write({ event: "security-event", code: state === "completed" ? "UNCLASSIFIED" : "ERR_FAILED" }));
-      item.resume();
+      try {
+        item.setSavePath(destination);
+        let bucket = -1;
+        item.on("updated", (_updateEvent, state) => { const total = item.getTotalBytes(); const next = total > 0 ? Math.min(10, Math.floor(item.getReceivedBytes() * 10 / total)) : 0; if (next !== bucket) { bucket = next; logger.lifecycle("download-progress", `${next}:${state}`); } });
+        item.once("done", (_doneEvent, state) => { downloadReservations.delete(destination); if (state !== "completed") try { rmSync(destination); } catch { /* no reservation */ } logger.write({ event: "security-event", code: state === "completed" ? "UNCLASSIFIED" : "ERR_FAILED" }); });
+        item.resume();
+      } catch { downloadReservations.delete(destination); try { rmSync(destination); } catch { /* no reservation */ } item.cancel(); logger.write({ event: "download-denied", code: "UNCLASSIFIED" }); }
     }).catch(() => { item.cancel(); logger.write({ event: "download-denied", code: "UNCLASSIFIED" }); });
   });
 }
@@ -119,18 +127,20 @@ function createWindow(startUrl: string, logger: RotatingSafeLogger): BrowserWind
   const restored = bounds.load(displays());
   const window = new BrowserWindow({ title: "CivCom", show: false, icon: join(app.getAppPath(), "assets", "civcom.svg"), ...(restored === undefined ? {} : restored), webPreferences: createWebPreferences() });
   const offlineUrl = createOfflinePageUrl(join(app.getAppPath(), "dist", "offline.html"));
-  const navigation = createRuntimeNavigationGate(offlineUrl);
+  const callbacks = createWindowCallbacks({ startUrl, offlineUrl, load: (url) => { void window.loadURL(url); }, show: showMainWindow, log: (event) => logger.write(event) });
+  const navigation = createNavigationCallbacks({ offlineUrl, load: (url) => { void window.loadURL(url); }, openExternal: shell.openExternal, log: (event) => logger.write(event) });
   const loadStart = (): void => { void window.loadURL(startUrl); };
-  window.webContents.setWindowOpenHandler(({ url }) => { if (navigation.windowOpen(url).action === "external") void shell.openExternal(url).catch(() => logger.write({ event: "navigation-denied", code: "UNCLASSIFIED" })); return { action: "deny" }; });
-  const enforceNavigation = (event: Electron.Event, url: string): void => { if (!navigation.navigate(url).allow) { event.preventDefault(); logger.write({ event: "navigation-denied", code: "UNCLASSIFIED" }); } };
+  window.webContents.setWindowOpenHandler(({ url }) => navigation.windowOpen(url));
+  const enforceNavigation = (event: Electron.Event, url: string): void => navigation.navigate(event, url);
   window.webContents.on("will-navigate", enforceNavigation);
   window.webContents.on("will-redirect", enforceNavigation);
-  window.webContents.on("did-fail-load", (_event, errorCode, _description, _url, mainFrame) => { if (mainFrame && errorCode !== -3) { logger.write({ event: "load-failed", code: "ERR_FAILED" }); void window.loadURL(offlineUrl); } });
-  window.webContents.on("did-navigate-in-page", (_event, url) => { if (url === `${offlineUrl}#retry`) loadStart(); });
-  window.on("close", (event) => { if (!quitting) { event.preventDefault(); window.hide(); } });
+  window.webContents.on("did-fail-load", (_event, errorCode, _description, url, mainFrame) => callbacks.failedLoad(errorCode, mainFrame, url));
+  window.webContents.on("did-navigate-in-page", (_event, url) => callbacks.retry(url));
+  window.webContents.on("page-title-updated", (event) => window.setTitle(callbacks.pageTitle(event)));
+  window.on("close", (event) => { if (!quitting) { event.preventDefault(); window.hide(); logger.lifecycle("hide"); } });
   window.on("close", () => bounds.save(window.getBounds(), displays()));
   configureDownloads(window.webContents, logger);
-  window.once("ready-to-show", () => { if (!isHiddenStart(process.argv)) showMainWindow(); });
+  window.once("ready-to-show", () => { logger.lifecycle("ready"); callbacks.ready(isHiddenStart(process.argv) || (process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin)); if (activationPending) { activationPending = false; showMainWindow(); } });
   loadStart();
   return window;
 }
@@ -138,18 +148,20 @@ function configureUpdater(logger: RotatingSafeLogger): UpdateScheduler {
   const isDeb = process.platform === "linux" && process.env.APPIMAGE === undefined;
   autoUpdater.on("error", () => logger.write({ event: "security-event", code: "UNCLASSIFIED" }));
   autoUpdater.on("update-downloaded", async () => { const response = await dialog.showMessageBox({ type: "info", buttons: ["Uruchom ponownie", "Później"], defaultId: 0, cancelId: 1, title: "CivCom", message: "Aktualizacja jest gotowa. Uruchomić CivCom ponownie?" }); if (response.response === 0) autoUpdater.quitAndInstall(); });
-  return new UpdateScheduler({ isPackaged: app.isPackaged, platform: process.platform, isDeb, check: async () => { await autoUpdater.checkForUpdates(); }, openManual: () => { void shell.openExternal(APPROVED_DOWNLOAD_PAGE); }, every: (callback, milliseconds) => setInterval(callback, milliseconds), clearEvery: (handle) => clearInterval(handle as NodeJS.Timeout), unref: (handle) => { (handle as NodeJS.Timeout).unref(); } });
+  return new UpdateScheduler({ isPackaged: app.isPackaged, platform: process.platform, isDeb, check: async () => { await autoUpdater.checkForUpdates(); }, openManual: () => shell.openExternal(APPROVED_DOWNLOAD_PAGE), onError: () => logger.lifecycle("update-error", "ERR"), every: (callback, milliseconds) => setInterval(callback, milliseconds), clearEvery: (handle) => clearInterval(handle as NodeJS.Timeout), unref: (handle) => { (handle as NodeJS.Timeout).unref(); } });
 }
 if (!app.requestSingleInstanceLock()) app.quit(); else {
   app.on("second-instance", showMainWindow);
   app.on("activate", showMainWindow);
   app.on("certificate-error", (event, _contents, _url, _error, _certificate, callback) => { event.preventDefault(); callback(false); });
-  app.on("before-quit", () => { quitting = true; updater?.stop(); });
+  app.on("before-quit", () => { quitting = true; updater?.stop(); lifecycleLogger?.lifecycle("stop"); });
   void app.whenReady().then(async () => {
     const startUrl = resolvedStartUrl();
     if (startUrl === undefined) { app.quit(); return; }
     const logger = createLogger();
-    configureSession(); createMenu(); updater = configureUpdater(logger); mainWindow = createWindow(startUrl, logger); createTray();
+    lifecycleLogger = logger;
+    logger.lifecycle("startup"); logger.lifecycle("version", app.getVersion());
+    configureSession(); createMenu(); updater = configureUpdater(logger); mainWindow = createWindow(startUrl, logger); createTray(logger);
     await promptForAutostart();
     await updater.start();
   });

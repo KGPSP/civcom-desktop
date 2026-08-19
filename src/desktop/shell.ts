@@ -3,6 +3,7 @@ import {
   authorizePermissionRequest,
   authorizeTopLevelNavigation
 } from "../security/url-policy.js";
+import { pathToFileURL } from "node:url";
 
 export const APP_START_HIDDEN_ARG = "--hidden";
 export const CIVCOM_PARTITION = "persist:civcom";
@@ -35,7 +36,7 @@ export type NavigationResult = Readonly<{ allow: boolean }>;
 export type WindowOpenResult = Readonly<{ action: "external" | "deny" }>;
 
 export function createOfflinePageUrl(filePath: string): string {
-  return new URL(`file://${filePath}`).href;
+  return pathToFileURL(filePath).href;
 }
 
 export function createRuntimeNavigationGate(offlineUrl: string): Readonly<{
@@ -91,26 +92,21 @@ function isFiniteInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value);
 }
 
-function isVisibleOnAnyDisplay(bounds: BoundsFile, displays: readonly DisplayArea[]): boolean {
-  return displays.some((display) =>
-    bounds.x + bounds.width > display.x && bounds.x < display.x + display.width &&
-    bounds.y + bounds.height > display.y && bounds.y < display.y + display.height
-  );
-}
-
-function validBounds(value: unknown, displays: readonly DisplayArea[]): value is BoundsFile {
+export function normalizeBounds(value: unknown, displays: readonly DisplayArea[]): BoundsFile | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
+    return undefined;
   }
   const candidate = value as Record<string, unknown>;
   if (![candidate.x, candidate.y, candidate.width, candidate.height].every(isFiniteInteger)) {
-    return false;
+    return undefined;
   }
   const bounds = candidate as BoundsFile;
-  if (bounds.width < 320 || bounds.height < 240 || bounds.width > 10000 || bounds.height > 10000) {
-    return false;
-  }
-  return isVisibleOnAnyDisplay(bounds, displays);
+  if (displays.length === 0 || bounds.width <= 0 || bounds.height <= 0) return undefined;
+  const intersection = (display: DisplayArea): number => Math.max(0, Math.min(bounds.x + bounds.width, display.x + display.width) - Math.max(bounds.x, display.x)) * Math.max(0, Math.min(bounds.y + bounds.height, display.y + display.height) - Math.max(bounds.y, display.y));
+  const target = displays.reduce((best, display) => intersection(display) > intersection(best) ? display : best, displays[0]!);
+  const width = Math.min(target.width, Math.max(Math.min(320, target.width), bounds.width));
+  const height = Math.min(target.height, Math.max(Math.min(240, target.height), bounds.height));
+  return Object.freeze({ x: Math.min(Math.max(bounds.x, target.x), target.x + target.width - width), y: Math.min(Math.max(bounds.y, target.y), target.y + target.height - height), width, height });
 }
 
 export type BoundsStorage = Readonly<{ read(): string | undefined; writeAtomic(value: string): void }>;
@@ -123,16 +119,15 @@ export class BoundsStore {
     if (raw === undefined) return undefined;
     try {
       const parsed: unknown = JSON.parse(raw);
-      return validBounds(parsed, displays) ? Object.freeze({ ...parsed }) : undefined;
+      return normalizeBounds(parsed, displays);
     } catch {
       return undefined;
     }
   }
 
   public save(bounds: BoundsFile, displays: readonly DisplayArea[]): void {
-    if (validBounds(bounds, displays)) {
-      this.storage.writeAtomic(JSON.stringify(bounds));
-    }
+    const normalized = normalizeBounds(bounds, displays);
+    if (normalized !== undefined) this.storage.writeAtomic(JSON.stringify(normalized));
   }
 }
 
@@ -149,9 +144,9 @@ export function isHiddenStart(args: readonly string[]): boolean {
   return args.includes(APP_START_HIDDEN_ARG);
 }
 
-export function makeLoginItemSettings(platform: NodeJS.Platform, enabled: boolean): Readonly<{ openAtLogin: boolean; openAsHidden?: boolean; args: readonly string[] }> {
+export function makeLoginItemSettings(platform: NodeJS.Platform, enabled: boolean): Readonly<{ openAtLogin: boolean; args: readonly string[]; enabled?: boolean }> {
   return Object.freeze(platform === "darwin"
-    ? { openAtLogin: enabled, openAsHidden: enabled, args: Object.freeze([APP_START_HIDDEN_ARG]) }
+    ? { openAtLogin: enabled, enabled, args: Object.freeze([APP_START_HIDDEN_ARG]) }
     : { openAtLogin: enabled, args: Object.freeze([APP_START_HIDDEN_ARG]) });
 }
 
@@ -159,12 +154,12 @@ const RESERVED_WINDOWS_BASENAMES = new Set(["CON", "PRN", "AUX", "NUL", "COM1", 
 
 export function sanitizeDownloadBasename(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const name = value.normalize("NFC").trim();
+  const name = value.normalize("NFC");
   const unsafeCharacter = [...name].some((character) => {
     const code = character.charCodeAt(0);
     return code <= 31 || code === 127 || '<>:"|?*'.includes(character);
   });
-  if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\\") || unsafeCharacter) {
+  if (name === "" || name === "." || name === ".." || name.endsWith(".") || name.endsWith(" ") || Buffer.byteLength(name, "utf8") > 240 || name.includes("/") || name.includes("\\") || unsafeCharacter) {
     return undefined;
   }
   const stem = name.split(".", 1)[0]?.toUpperCase();
@@ -175,16 +170,33 @@ export function sanitizeDownloadBasename(value: unknown): string | undefined {
 export async function resolveDownloadDestination(
   downloadsDirectory: string,
   filename: string,
-  exists: (path: string) => boolean | Promise<boolean>
+  exists: (path: string) => boolean | Promise<boolean>,
+  pathApi: Readonly<{ isAbsolute(path: string): boolean; join(directory: string, filename: string): string }> = { isAbsolute: (path) => path.startsWith("/"), join: (directory, filename) => `${directory.replace(/[\\/]$/, "")}/${filename}` }
 ): Promise<string | undefined> {
   const safeName = sanitizeDownloadBasename(filename);
-  if (safeName === undefined || downloadsDirectory === "" || !downloadsDirectory.startsWith("/")) return undefined;
+  if (safeName === undefined || downloadsDirectory === "" || !pathApi.isAbsolute(downloadsDirectory)) return undefined;
   const dot = safeName.lastIndexOf(".");
   const stem = dot > 0 ? safeName.slice(0, dot) : safeName;
   const extension = dot > 0 ? safeName.slice(dot) : "";
   for (let index = 0; index < 10000; index += 1) {
-    const candidate = `${downloadsDirectory.replace(/\/$/, "")}/${index === 0 ? safeName : `${stem} (${index})${extension}`}`;
+    const candidate = pathApi.join(downloadsDirectory, index === 0 ? safeName : `${stem} (${index})${extension}`);
     if (!(await exists(candidate))) return candidate;
+  }
+  return undefined;
+}
+
+export async function reserveDownloadDestination(
+  downloadsDirectory: string,
+  filename: string,
+  reserve: (path: string) => boolean | Promise<boolean>,
+  pathApi: Readonly<{ isAbsolute(path: string): boolean; join(directory: string, filename: string): string }>
+): Promise<string | undefined> {
+  const safeName = sanitizeDownloadBasename(filename);
+  if (safeName === undefined || !pathApi.isAbsolute(downloadsDirectory)) return undefined;
+  const dot = safeName.lastIndexOf("."); const stem = dot > 0 ? safeName.slice(0, dot) : safeName; const extension = dot > 0 ? safeName.slice(dot) : "";
+  for (let index = 0; index < 10000; index += 1) {
+    const candidate = pathApi.join(downloadsDirectory, index === 0 ? safeName : `${stem} (${index})${extension}`);
+    if (await reserve(candidate)) return candidate;
   }
   return undefined;
 }
@@ -194,7 +206,8 @@ export type UpdateSchedulerDependencies = Readonly<{
   platform: NodeJS.Platform;
   isDeb?: boolean;
   check: () => Promise<void>;
-  openManual?: () => void;
+  openManual?: () => void | Promise<void>;
+  onError?: () => void;
   every: (callback: () => void, milliseconds: number) => unknown;
   clearEvery: (handle: unknown) => void;
   unref: (handle: unknown) => void;
@@ -221,7 +234,7 @@ export class UpdateScheduler {
   public async manual(): Promise<void> {
     if (!this.enabled) return;
     if (this.dependencies.isDeb === true) {
-      this.dependencies.openManual?.();
+      try { await this.dependencies.openManual?.(); } catch { this.dependencies.onError?.(); }
       return;
     }
     await this.check();
@@ -240,7 +253,7 @@ export class UpdateScheduler {
     try {
       await this.dependencies.check();
     } catch {
-      // Updater errors are intentionally reduced to a safe local code by the caller.
+      this.dependencies.onError?.();
     } finally {
       this.#running = false;
     }
