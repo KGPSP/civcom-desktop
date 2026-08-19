@@ -61,7 +61,6 @@ function linuxMaintainer(environment) {
 }
 
 function commonConfig(target) {
-  const marker = `build/package-type-${target}`;
   return {
     appId: "info.soia.civcom.desktop",
     productName: "CivCom",
@@ -77,7 +76,7 @@ function commonConfig(target) {
       { from: "assets", to: "assets", filter: ["civcom.png", "civcom-tray.png", "civcom-tray@2x.png"] },
       "LICENSE"
     ],
-    extraResources: [{ from: marker, to: "package-type" }],
+    ...(target === "linux" ? {} : { extraResources: [{ from: `build/package-type-${target}`, to: "package-type" }] }),
     extraMetadata: { desktopName: "info.soia.civcom.desktop" },
     afterPack: "scripts/after-pack.mjs",
     detectUpdateChannel: false,

@@ -65,7 +65,8 @@ export async function verifyPackagedLayout(layoutValue, expectedMarker) {
   } catch (error) {
     if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error;
   }
-  if (await readFile(join(layout.resources, "package-type"), "utf8") !== `${expectedMarker}\n`) throw new Error("Unexpected package marker");
+  const serializedMarker = expectedMarker === "deb" ? "deb" : `${expectedMarker}\n`;
+  if (await readFile(join(layout.resources, "package-type"), "utf8") !== serializedMarker) throw new Error("Unexpected package marker");
 }
 
 export function createLaunchPlan(input) {

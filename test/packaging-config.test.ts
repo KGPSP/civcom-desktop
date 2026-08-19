@@ -72,6 +72,7 @@ describe("effective electron-builder configuration", () => {
     expect(config.electronFuses).toBeUndefined();
     expect(config.asarUnpack).toBeUndefined();
     expect(config.afterPack).toBe("scripts/after-pack.mjs");
+    expect(config.extraResources).toEqual([{ from: "build/package-type-windows", to: "package-type" }]);
     expect(config.files).toEqual([
       "package.json",
       "!**/*.map",
@@ -105,6 +106,7 @@ describe("effective electron-builder configuration", () => {
       NSScreenCaptureUsageDescription: "CivCom udostępnia wybrany ekran lub okno wyłącznie po potwierdzeniu użytkownika.",
       NSAudioCaptureUsageDescription: "CivCom może przechwycić dźwięk wybranego źródła podczas udostępniania za zgodą użytkownika."
     });
+    expect(config.extraResources).toEqual([{ from: "build/package-type-macos", to: "package-type" }]);
   });
 
   it("builds AppImage and DEB in one Linux x64 configuration with a static zstd AppImage", () => {
@@ -133,6 +135,7 @@ describe("effective electron-builder configuration", () => {
       } }
     });
     expect(config.extraMetadata).toMatchObject({ desktopName: "info.soia.civcom.desktop" });
+    expect(config.extraResources).toBeUndefined();
     expect(config.appImage).toMatchObject({ compression: "zstd" });
     expect(config.deb).toMatchObject({ maintainer: "Test Organisation <release@example.org>", packageCategory: "net", packageName: "civcom" });
   });

@@ -73,6 +73,19 @@ describe("packaged application verification policy", () => {
     await expect(verifyPackagedLayout(linked, "deb")).rejects.toThrow();
   });
 
+  it("accepts only the raw DEB marker emitted by the pinned Linux packager", async () => {
+    const { resolvePackagedLayout, verifyPackagedLayout } = await loadModule();
+    const releaseDirectory = await mkdtemp(join(tmpdir(), "civcom-packaged-deb-marker-"));
+    const layout = resolvePackagedLayout({ target: "linux", releaseDirectory });
+    await mkdir(layout.resources, { recursive: true });
+    await writeFile(layout.executable, "binary");
+    await writeFile(join(layout.resources, "app.asar"), "asar");
+    await writeFile(join(layout.resources, "package-type"), "deb");
+    await expect(verifyPackagedLayout(layout, "deb")).resolves.toBeUndefined();
+    await writeFile(join(layout.resources, "package-type"), "deb\n");
+    await expect(verifyPackagedLayout(layout, "deb")).rejects.toThrow("Unexpected package marker");
+  });
+
   it("creates a native offline launch without debugging or sandbox bypass flags", async () => {
     const { createLaunchPlan, resolvePackagedLayout } = await loadModule();
     const userDataDirectory = "/tmp/civcom-smoke";

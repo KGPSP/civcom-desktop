@@ -100,11 +100,11 @@ describe("packaged update policy", () => {
     });
     expect(detect("win32", "windows\n")).toBe("windows");
     expect(detect("darwin", "macos\n")).toBe("macos");
-    expect(detect("linux", "deb\n")).toBe("deb");
-    expect(detect("linux", "deb\n", "/tmp/CivCom.AppImage")).toBe("appimage");
-    expect(detect("linux", "deb\n", "relative.AppImage")).toBe("unknown");
-    expect(detect("linux", "deb\n", "/tmp/CivCom.AppImage", false)).toBe("deb");
-    for (const [platform, marker] of [["linux", undefined], ["linux", "appimage\n"], ["linux", "deb\nextra"], ["win32", "macos\n"], ["darwin", "windows\n"], ["freebsd", "deb\n"]] as const) expect(detect(platform, marker)).toBe("unknown");
+    expect(detect("linux", "deb")).toBe("deb");
+    expect(detect("linux", "deb", "/tmp/CivCom.AppImage")).toBe("appimage");
+    expect(detect("linux", "deb", "relative.AppImage")).toBe("unknown");
+    expect(detect("linux", "deb", "/tmp/CivCom.AppImage", false)).toBe("deb");
+    for (const [platform, marker] of [["linux", undefined], ["linux", "appimage\n"], ["linux", "deb\n"], ["linux", "deb\nextra"], ["win32", "macos\n"], ["darwin", "windows\n"], ["freebsd", "deb"]] as const) expect(detect(platform, marker)).toBe("unknown");
     expect(detectPackageType({ isPackaged: false, platform: "linux", resourcesPath: "/x", readMarker: vi.fn(), inspectAppImage: vi.fn() })).toBe("development");
   });
 

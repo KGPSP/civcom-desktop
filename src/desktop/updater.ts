@@ -83,7 +83,7 @@ export function detectPackageType(input: Readonly<{
     }
     if (input.platform === "win32" && marker === "windows\n") return "windows";
     if (input.platform === "darwin" && marker === "macos\n") return "macos";
-    if (input.platform === "linux" && marker === "deb\n") return "deb";
+    if (input.platform === "linux" && marker === "deb") return "deb";
     return "unknown";
   } catch {
     return "unknown";
