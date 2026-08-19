@@ -9,6 +9,7 @@ export default async function afterPack(context) {
   if (!shouldFlipFuses({ platform: context.electronPlatformName, arch: context.arch })) return;
   const executable = resolveElectronExecutable({
     platform: context.electronPlatformName,
+    hostPlatform: process.platform,
     appOutDir: context.appOutDir,
     productFilename: context.packager.appInfo.productFilename,
     executableName: context.packager.executableName

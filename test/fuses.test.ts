@@ -9,7 +9,7 @@ type FusePolicy = Readonly<{
   FUSE_VALUES: Readonly<Record<string, boolean>>;
   createFuseConfig(api: Readonly<{ FuseVersion: Readonly<{ V1: string }>; FuseV1Options: Readonly<Record<string, number>> }>): Readonly<Record<string | number, unknown>>;
   shouldFlipFuses(input: Readonly<{ platform: string; arch: number }>): boolean;
-  resolveElectronExecutable(input: Readonly<{ platform: string; appOutDir: string; productFilename: string; executableName?: string }>): string;
+  resolveElectronExecutable(input: Readonly<{ platform: string; hostPlatform?: string; appOutDir: string; productFilename: string; executableName?: string }>): string;
   verifyFuseWire(wire: Readonly<Record<string | number, unknown>>, api: Readonly<{ FuseVersion: Readonly<{ V1: string }>; FuseV1Options: Readonly<Record<string, number>>; FuseState: Readonly<{ ENABLE: number; DISABLE: number }> }>): void;
 }>;
 
@@ -64,15 +64,33 @@ describe("Electron fuse policy", () => {
 
   it("resolves only the exact executable layout for each supported packaged OS", async () => {
     const { resolveElectronExecutable } = await loadPolicy();
-    expect(resolveElectronExecutable({ platform: "darwin", appOutDir: "/out", productFilename: "CivCom" })).toBe("/out/CivCom.app/Contents/MacOS/CivCom");
-    expect(resolveElectronExecutable({ platform: "win32", appOutDir: "C:\\out", productFilename: "CivCom" })).toBe("C:\\out\\CivCom.exe");
-    expect(resolveElectronExecutable({ platform: "linux", appOutDir: "/out", productFilename: "CivCom", executableName: "civcom" })).toBe("/out/civcom");
+    expect(resolveElectronExecutable({ platform: "darwin", hostPlatform: "darwin", appOutDir: "/out", productFilename: "CivCom" })).toBe("/out/CivCom.app/Contents/MacOS/CivCom");
+    expect(resolveElectronExecutable({ platform: "win32", hostPlatform: "win32", appOutDir: "C:\\out", productFilename: "CivCom" })).toBe("C:\\out\\CivCom.exe");
+    expect(resolveElectronExecutable({ platform: "linux", hostPlatform: "linux", appOutDir: "/out", productFilename: "CivCom", executableName: "civcom" })).toBe("/out/civcom");
     for (const input of [
-      { platform: "freebsd", appOutDir: "/out", productFilename: "CivCom", executableName: "civcom" },
-      { platform: "linux", appOutDir: "/out", productFilename: "CivCom" },
-      { platform: "linux", appOutDir: "relative", productFilename: "CivCom", executableName: "civcom" },
-      { platform: "darwin", appOutDir: "/out", productFilename: "../CivCom", executableName: "civcom" }
+      { platform: "freebsd", hostPlatform: "darwin", appOutDir: "/out", productFilename: "CivCom", executableName: "civcom" },
+      { platform: "linux", hostPlatform: "linux", appOutDir: "/out", productFilename: "CivCom" },
+      { platform: "linux", hostPlatform: "linux", appOutDir: "relative", productFilename: "CivCom", executableName: "civcom" },
+      { platform: "darwin", hostPlatform: "darwin", appOutDir: "/out", productFilename: "../CivCom", executableName: "civcom" },
+      { platform: "win32", hostPlatform: "freebsd", appOutDir: "/out", productFilename: "CivCom" }
     ]) expect(() => resolveElectronExecutable(input)).toThrow();
+  });
+
+  it("uses the build host path semantics when cross-building a Windows target", async () => {
+    const { resolveElectronExecutable } = await loadPolicy();
+
+    expect(resolveElectronExecutable({
+      platform: "win32",
+      hostPlatform: "darwin",
+      appOutDir: "/out/win-unpacked",
+      productFilename: "CivCom"
+    })).toBe("/out/win-unpacked/CivCom.exe");
+    expect(resolveElectronExecutable({
+      platform: "win32",
+      hostPlatform: "win32",
+      appOutDir: "C:\\out\\win-unpacked",
+      productFilename: "CivCom"
+    })).toBe("C:\\out\\win-unpacked\\CivCom.exe");
   });
 
   it("flips a universal macOS executable only after the architecture merge", async () => {

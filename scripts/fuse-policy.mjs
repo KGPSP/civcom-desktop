@@ -1,4 +1,4 @@
-import { isAbsolute, join, win32 } from "node:path";
+import { posix, win32 } from "node:path";
 
 export const FUSE_VALUES = Object.freeze({
   RunAsNode: false,
@@ -52,17 +52,17 @@ export function shouldFlipFuses(input) {
 export function resolveElectronExecutable(input) {
   if (input === null || typeof input !== "object") throw new Error("Invalid pack context");
   const productFilename = safeLeaf(input.productFilename, "product filename");
-  if (input.platform === "win32") {
-    if (typeof input.appOutDir !== "string" || !win32.isAbsolute(input.appOutDir)) throw new Error("Invalid Windows output directory");
-    return win32.join(input.appOutDir, `${productFilename}.exe`);
-  }
-  if (input.platform === "darwin" || input.platform === "linux") {
-    if (typeof input.appOutDir !== "string" || !isAbsolute(input.appOutDir)) throw new Error("Invalid output directory");
-    return input.platform === "darwin"
-      ? join(input.appOutDir, `${productFilename}.app`, "Contents", "MacOS", productFilename)
-      : join(input.appOutDir, safeLeaf(input.executableName, "executable name"));
-  }
-  throw new Error("Unsupported packaged platform");
+  if (input.platform !== "win32" && input.platform !== "darwin" && input.platform !== "linux") throw new Error("Unsupported packaged platform");
+  const pathApi = input.hostPlatform === "win32"
+    ? win32
+    : input.hostPlatform === "darwin" || input.hostPlatform === "linux"
+      ? posix
+      : undefined;
+  if (pathApi === undefined || typeof input.appOutDir !== "string" || !pathApi.isAbsolute(input.appOutDir)) throw new Error("Invalid build host output directory");
+  if (input.platform === "win32") return pathApi.join(input.appOutDir, `${productFilename}.exe`);
+  return input.platform === "darwin"
+    ? pathApi.join(input.appOutDir, `${productFilename}.app`, "Contents", "MacOS", productFilename)
+    : pathApi.join(input.appOutDir, safeLeaf(input.executableName, "executable name"));
 }
 
 export function verifyFuseWire(wire, api) {
