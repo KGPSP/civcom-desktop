@@ -73,7 +73,7 @@ function commonConfig(target) {
     files: [
       "package.json",
       "!**/*.map",
-      { from: "dist", to: "dist", filter: ["**/*", "!**/*.map"] },
+      { from: "dist", to: "dist", filter: ["**/*", "!**/*.map", "!security/credential-metadata.js"] },
       { from: "assets", to: "assets", filter: ["civcom.png", "civcom-tray.png", "civcom-tray@2x.png"] },
       "LICENSE"
     ],
