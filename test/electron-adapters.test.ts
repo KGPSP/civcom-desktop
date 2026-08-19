@@ -16,6 +16,12 @@ describe("Electron callback adapters", () => {
     expect(handlers.request("media", { securityOrigin: "https://call.soia.info", requestingUrl: "https://civcom.soia.info/", mediaTypes: ["video"] })).toBe(false);
     expect(handlers.request("media", { securityOrigin: "https://call.soia.info/?x=1", mediaTypes: ["video"] })).toBe(true);
     expect(handlers.request("media", { securityOrigin: "https://call.soia.info.evil/", mediaTypes: ["video"] })).toBe(false);
+    expect(handlers.request("media", { securityOrigin: "https://call.soia.info/", mediaTypes: new Proxy(["audio"], { getOwnPropertyDescriptor: () => { throw new Error("length trap"); } }) })).toBe(false);
+    const accessorArray = ["audio"];
+    Object.defineProperty(accessorArray, "0", { get: () => "audio" });
+    expect(handlers.request("media", { securityOrigin: "https://call.soia.info/", mediaTypes: accessorArray })).toBe(false);
+    const sparseArray = new Array(1);
+    expect(handlers.request("media", { securityOrigin: "https://call.soia.info/", mediaTypes: sparseArray })).toBe(false);
     expect(handlers.check("media", "https://call.soia.info", new Proxy({}, { getOwnPropertyDescriptor: () => { throw new Error("trap"); } }))).toBe(false);
     expect(handlers.check("notifications", "https://call.soia.info", new Proxy({}, { getOwnPropertyDescriptor: () => { throw new Error("trap"); } }))).toBe(false);
     expect(handlers.request("notifications", new Proxy({}, { getOwnPropertyDescriptor: () => { throw new Error("trap"); } }))).toBe(false);

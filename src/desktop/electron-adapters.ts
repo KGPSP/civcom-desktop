@@ -40,10 +40,25 @@ function checkOrigin(requestingOrigin: unknown, details: Extract<DetailSnapshot,
   return !hasDetailOrigin || fromDetails === origin ? origin : undefined;
 }
 
+function safeMediaArray(value: unknown): readonly string[] | undefined {
+  try {
+    if (!Array.isArray(value)) return undefined;
+    const length = Object.getOwnPropertyDescriptor(value, "length");
+    if (length === undefined || !("value" in length) || !Number.isInteger(length.value) || length.value < 1 || length.value > 2) return undefined;
+    const types: string[] = [];
+    for (let index = 0; index < length.value; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor === undefined || !("value" in descriptor) || (descriptor.value !== "audio" && descriptor.value !== "video")) return undefined;
+      types.push(descriptor.value);
+    }
+    return Object.freeze(types);
+  } catch { return undefined; }
+}
+
 function mediaTypes(details: Extract<DetailSnapshot, { kind: "ok" }>, singular: boolean): readonly string[] | undefined {
   const value = singular ? details.mediaType : details.mediaTypes;
   if (singular) return value === "audio" || value === "video" ? [value] : undefined;
-  return Array.isArray(value) && value.length > 0 && value.every((entry) => entry === "audio" || entry === "video") ? value : undefined;
+  return safeMediaArray(value);
 }
 
 export function createPermissionCallbacks(): Readonly<{
