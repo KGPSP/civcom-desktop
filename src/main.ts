@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, nativeImage, screen, session, shell, Tray, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, screen, session, shell, Tray, webContents, type MenuItemConstructorOptions } from "electron";
 import electronUpdater from "electron-updater";
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -7,8 +7,14 @@ import { APPROVED_DOWNLOAD_PAGE, BoundsStore, createFirstRunState, createOffline
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
 import { resolveStartUrl } from "./security/url-policy.js";
 import { authorizeDownloadRequest, createNavigationCallbacks, createPermissionCallbacks, createTraySafely, createWindowCallbacks } from "./desktop/electron-adapters.js";
+import { DisplayMediaCoordinator } from "./screen-share/coordinator.js";
+import { watchFrameLifetime } from "./screen-share/frame-lifetime.js";
+import { installDisplayMediaRequestHandler } from "./screen-share/install.js";
+import { createLocalPickerHost } from "./screen-share/local-picker-host.js";
+import type { CaptureSourceCandidate } from "./screen-share/source-catalog.js";
 
 const { autoUpdater } = electronUpdater;
+const SCREEN_SHARE_NATIVE_OPERATION_TIMEOUT_MS = 120_000;
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -18,6 +24,7 @@ let activationPending = false;
 let trayAvailable = false;
 const downloadReservations = new Set<string>();
 let lifecycleLogger: RotatingSafeLogger | undefined;
+let screenSharing: Readonly<{ shutdown(): void }> | undefined;
 
 function writeAtomic(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -78,7 +85,7 @@ async function promptForAutostart(): Promise<void> {
   writePreferences(Object.freeze({ autostartPrompted: true, autostartEnabled: enabled }));
 }
 function showMainWindow(): void { if (mainWindow === undefined || mainWindow.isDestroyed()) { activationPending = true; return; } mainWindow.show(); mainWindow.focus(); }
-function quitApplication(): void { quitting = true; updater?.stop(); lifecycleLogger?.lifecycle("stop"); app.quit(); }
+function quitApplication(): void { quitting = true; screenSharing?.shutdown(); updater?.stop(); lifecycleLogger?.lifecycle("stop"); app.quit(); }
 function createMenu(): void {
   const template: MenuItemConstructorOptions[] = [
     { label: "CivCom", submenu: [{ label: "Pokaż CivCom", click: showMainWindow }, { label: "Ukryj CivCom", click: () => mainWindow?.hide() }, { type: "separator" }, { label: "Sprawdź aktualizacje", click: () => { void updater?.manual(); } }, { type: "separator" }, { label: "Zakończ CivCom", click: quitApplication }] },
@@ -99,13 +106,84 @@ function createTray(logger: RotatingSafeLogger): boolean {
   if (!available) logger.write({ event: "security-event", code: "UNCLASSIFIED" });
   return available;
 }
-function configureSession(): Electron.Session {
+function configureSession(logger: RotatingSafeLogger): Electron.Session {
   const civcomSession = session.fromPartition("persist:civcom");
   const permission = createPermissionCallbacks();
   civcomSession.setPermissionCheckHandler((_contents, name, requestingOrigin, details) => permission.check(name, requestingOrigin, details));
   civcomSession.setPermissionRequestHandler((_contents, name, callback, details) => callback(permission.request(name, details)));
   civcomSession.setDevicePermissionHandler(() => false);
-  // Task 4 installs setDisplayMediaRequestHandler; this shell never selects a capture source.
+  const environment = Object.freeze({
+    platform: process.platform,
+    systemVersion: process.getSystemVersion(),
+    ...(process.platform === "linux" ? { sessionType: process.env.XDG_SESSION_TYPE } : {})
+  });
+  const pickerHost = createLocalPickerHost({
+    ipcMain,
+    createWindow: (options) => new BrowserWindow(options),
+    documentPath: join(app.getAppPath(), "dist", "screen-share", "picker.html"),
+    preloadPath: join(app.getAppPath(), "dist", "screen-share", "picker-preload.cjs")
+  });
+  const captureSources = async (): Promise<readonly CaptureSourceCandidate<Electron.DesktopCapturerSource>[]> => {
+    const sources = await desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 320, height: 180 } });
+    return Object.freeze(sources.map((source) => {
+      let id: unknown;
+      let name: unknown;
+      let thumbnailDataUrl: unknown;
+      try { id = source.id; name = source.name; thumbnailDataUrl = source.thumbnail.toDataURL(); } catch { /* malformed native source is skipped by the catalog */ }
+      return Object.freeze({ source, id, name, thumbnailDataUrl });
+    }));
+  };
+  const frameUsable = (frame: object): boolean => {
+    try {
+      const requestFrame = frame as Electron.WebFrameMain;
+      return !requestFrame.isDestroyed() && !requestFrame.detached && webContents.fromFrame(requestFrame)?.session === civcomSession;
+    } catch { return false; }
+  };
+  const coordinator = new DisplayMediaCoordinator<Electron.DesktopCapturerSource>({
+    environment,
+    getSources: captureSources,
+    refreshSource: async (selected) => {
+      const selectedId = selected.id;
+      if (typeof selectedId !== "string") return undefined;
+      const matches = (await captureSources()).filter((candidate) => candidate.id === selectedId);
+      return matches.length === 1 ? matches[0] : undefined;
+    },
+    presentPicker: (presentation, settle) => pickerHost.present(presentation, settle),
+    watchFrame: (frame, onGone) => {
+      const requestFrame = frame as Electron.WebFrameMain;
+      const owner = webContents.fromFrame(requestFrame);
+      if (owner === undefined) { onGone(); return () => undefined; }
+      return watchFrameLifetime({
+        listen: (event, listener) => {
+          if (event === "destroyed") owner.once("destroyed", listener);
+          else if (event === "render-process-gone") owner.once("render-process-gone", listener);
+          else owner.once("did-start-navigation", listener);
+        },
+        unlisten: (event, listener) => {
+          if (event === "destroyed") owner.removeListener("destroyed", listener);
+          else if (event === "render-process-gone") owner.removeListener("render-process-gone", listener);
+          else owner.removeListener("did-start-navigation", listener);
+        },
+        isUsable: () => frameUsable(requestFrame),
+        every: (check) => {
+          const timer = setInterval(check, 250);
+          timer.unref();
+          return timer;
+        },
+        clearEvery: (handle) => clearInterval(handle as NodeJS.Timeout)
+      }, onGone);
+    },
+    watchOperationTimeout: (onTimeout) => {
+      const timer = setTimeout(onTimeout, SCREEN_SHARE_NATIVE_OPERATION_TIMEOUT_MS);
+      timer.unref();
+      return () => clearTimeout(timer);
+    },
+    isFrameUsable: frameUsable,
+    createToken: () => randomBytes(32).toString("base64url"),
+    log: () => logger.write({ event: "security-event", code: "UNCLASSIFIED" })
+  });
+  installDisplayMediaRequestHandler({ session: civcomSession, environment, handle: (request, callback) => coordinator.handle(request, callback) });
+  screenSharing = Object.freeze({ shutdown: () => { coordinator.shutdown(); pickerHost.shutdown(); } });
   return civcomSession;
 }
 function configureDownloads(contents: Electron.WebContents, logger: RotatingSafeLogger): void {
@@ -166,14 +244,14 @@ if (!app.requestSingleInstanceLock()) app.quit(); else {
   app.on("second-instance", showMainWindow);
   app.on("activate", showMainWindow);
   app.on("certificate-error", (event, _contents, _url, _error, _certificate, callback) => { event.preventDefault(); callback(false); });
-  app.on("before-quit", () => { quitting = true; updater?.stop(); lifecycleLogger?.lifecycle("stop"); });
+  app.on("before-quit", () => { quitting = true; screenSharing?.shutdown(); updater?.stop(); lifecycleLogger?.lifecycle("stop"); });
   void app.whenReady().then(async () => {
     const startUrl = resolvedStartUrl();
     if (startUrl === undefined) { app.quit(); return; }
     const logger = createLogger();
     lifecycleLogger = logger;
     logger.lifecycle("startup"); logger.lifecycle("version", app.getVersion());
-    configureSession(); createMenu(); updater = configureUpdater(logger); trayAvailable = createTray(logger); mainWindow = createWindow(startUrl, logger);
+    configureSession(logger); createMenu(); updater = configureUpdater(logger); trayAvailable = createTray(logger); mainWindow = createWindow(startUrl, logger);
     await promptForAutostart();
     await updater.start();
   });

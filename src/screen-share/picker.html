@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Wybierz ekran lub okno — CivCom</title>
+    <link rel="stylesheet" href="picker.css">
+  </head>
+  <body>
+    <main>
+      <h1>Wybierz ekran lub okno</h1>
+      <p class="hint">Udostępnianie rozpocznie się dopiero po wybraniu źródła.</p>
+      <div id="sources" class="sources" role="list"></div>
+      <p id="empty" class="empty" hidden>Nie znaleziono dostępnych ekranów ani okien.</p>
+      <div class="actions"><button id="cancel" type="button">Anuluj</button></div>
+    </main>
+    <script type="module" src="picker-renderer.js"></script>
+  </body>
+</html>
