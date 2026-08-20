@@ -1,4 +1,4 @@
-import { isAbsolute, join } from "node:path";
+import { posix, win32 } from "node:path";
 
 export type PackagedSmokeResult = Readonly<{
   schemaVersion: 1;
@@ -13,9 +13,10 @@ export function isPackagedSmokeRequested(input: Readonly<{ isPackaged: boolean; 
     && !input.argv.some((value) => value.startsWith("--civcom-packaged-smoke=") || [...value].some((character) => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127));
 }
 
-export function packagedSmokeResultPath(userDataDirectory: string): string {
-  if (typeof userDataDirectory !== "string" || !isAbsolute(userDataDirectory)) throw new Error("invalid-packaged-smoke-user-data");
-  return join(userDataDirectory, "packaged-smoke.json");
+export function packagedSmokeResultPath(userDataDirectory: string, platform: NodeJS.Platform = process.platform): string {
+  const pathApi = platform === "win32" ? win32 : posix;
+  if (typeof userDataDirectory !== "string" || !pathApi.isAbsolute(userDataDirectory)) throw new Error("invalid-packaged-smoke-user-data");
+  return pathApi.join(userDataDirectory, "packaged-smoke.json");
 }
 
 export function createPackagedSmokeResult(input: Readonly<{ windowVisible: boolean; loadedUrl: string }>): PackagedSmokeResult {

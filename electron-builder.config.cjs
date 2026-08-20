@@ -60,7 +60,7 @@ function linuxMaintainer(environment) {
   return requireValue(environment, "CIVCOM_LINUX_MAINTAINER", /^[^<>]{2,100} <[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}>$/i);
 }
 
-function commonConfig(target) {
+function commonConfig(target, mode) {
   return {
     appId: "info.soia.civcom.desktop",
     productName: "CivCom",
@@ -77,7 +77,10 @@ function commonConfig(target) {
       "LICENSE"
     ],
     ...(target === "linux" ? {} : { extraResources: [{ from: `build/package-type-${target}`, to: "package-type" }] }),
-    extraMetadata: { desktopName: "info.soia.civcom.desktop" },
+    extraMetadata: {
+      desktopName: "info.soia.civcom.desktop",
+      civcomUpdatePolicy: mode === "pilot" ? "pilot-disabled-v1" : "production-enabled-v1"
+    },
     afterPack: "scripts/after-pack.mjs",
     detectUpdateChannel: false,
     generateUpdatesFilesForAllChannels: false,
@@ -91,7 +94,7 @@ function createConfig(environment) {
   if (mode === undefined || !MODES.has(mode)) throw new Error("CIVCOM_BUILD_MODE must be exactly pilot or production");
   if (target === undefined || !TARGETS.has(target)) throw new Error("CIVCOM_RELEASE_TARGET must be exactly windows, macos, or linux");
   const production = mode === "production";
-  const config = commonConfig(target);
+  const config = commonConfig(target, mode);
 
   if (target === "windows") {
     config.win = {

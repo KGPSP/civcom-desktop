@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
+import { posix, win32 } from "node:path";
 
 const moduleUrl = new URL("../src/desktop/updater.ts", import.meta.url).href;
 
 type UpdaterModule = Readonly<{
   LATEST_RELEASE_PAGE: string;
+  PILOT_UPDATE_NOTICE: Readonly<{ title: string; message: string; detail: string }>;
+  detectPackagedUpdatePolicy(input: Readonly<{
+    isPackaged: boolean;
+    appPath: string;
+    readMetadata(path: string): string | undefined;
+  }>): string;
   detectPackageType(input: Readonly<{
     isPackaged: boolean;
     platform: string;
@@ -52,6 +59,42 @@ function fakeUpdater(policyWrites: string[] = []) {
 }
 
 describe("packaged update policy", () => {
+  it("provides the Polish manual notice used when pilot updates are disabled", async () => {
+    const { PILOT_UPDATE_NOTICE } = await loadModule();
+    expect(PILOT_UPDATE_NOTICE).toEqual({
+      title: "CivCom — wersja pilotażowa",
+      message: "Aktualizacje automatyczne są wyłączone w tej niepodpisanej wersji pilotażowej CivCom.",
+      detail: "Nową wersję przekaże opiekun pilota."
+    });
+  });
+
+  it("recognises only exact ASAR package metadata and otherwise disables updates", async () => {
+    const { detectPackagedUpdatePolicy } = await loadModule();
+    const pathApi = process.platform === "win32" ? win32 : posix;
+    const appPath = process.platform === "win32"
+      ? "C:\\Program Files\\CivCom\\resources\\app.asar"
+      : "/opt/CivCom/resources/app.asar";
+    const metadataPath = pathApi.join(appPath, "package.json");
+    const detect = (metadata: unknown, isPackaged = true) => detectPackagedUpdatePolicy({
+      isPackaged,
+      appPath,
+      readMetadata: (path) => path === metadataPath ? JSON.stringify(metadata) : undefined
+    });
+    expect(detect({ civcomUpdatePolicy: "pilot-disabled-v1" })).toBe("pilot");
+    expect(detect({ civcomUpdatePolicy: "production-enabled-v1" })).toBe("production");
+    for (const metadata of [
+      {},
+      { civcomUpdatePolicy: "pilot" },
+      { civcomUpdatePolicy: "production" },
+      { civcomUpdatePolicy: "production-enabled-v1\npilot-disabled-v1" },
+      null,
+      []
+    ]) expect(detect(metadata)).toBe("disabled");
+    expect(detect({ civcomUpdatePolicy: "production-enabled-v1" }, false)).toBe("disabled");
+    expect(detectPackagedUpdatePolicy({ isPackaged: true, appPath: "relative.asar", readMetadata: vi.fn() })).toBe("disabled");
+    expect(detectPackagedUpdatePolicy({ isPackaged: true, appPath: "/opt/app.asar", readMetadata: () => "{" })).toBe("disabled");
+  });
+
   it("instantiates AppImageUpdater for a verified AppImage runtime even though the packaged marker is deb", async () => {
     const { detectPackageType, loadVerifiedUpdater } = await loadModule();
     expect(loadVerifiedUpdater).toBeTypeOf("function");
@@ -93,9 +136,9 @@ describe("packaged update policy", () => {
     const detect = (platform: string, marker: string | undefined, appImagePath?: string, valid = true) => detectPackageType({
       isPackaged: true,
       platform,
-      resourcesPath: "/opt/CivCom/resources",
+      resourcesPath: platform === "win32" ? "C:\\Program Files\\CivCom\\resources" : "/opt/CivCom/resources",
       ...(appImagePath === undefined ? {} : { appImagePath }),
-      readMarker: (path) => path === "/opt/CivCom/resources/package-type" ? marker : undefined,
+      readMarker: (path) => path === (platform === "win32" ? "C:\\Program Files\\CivCom\\resources\\package-type" : "/opt/CivCom/resources/package-type") ? marker : undefined,
       inspectAppImage: () => valid
     });
     expect(detect("win32", "windows\n")).toBe("windows");
@@ -106,6 +149,16 @@ describe("packaged update policy", () => {
     expect(detect("linux", "deb", "/tmp/CivCom.AppImage", false)).toBe("deb");
     for (const [platform, marker] of [["linux", undefined], ["linux", "appimage\n"], ["linux", "deb\n"], ["linux", "deb\nextra"], ["win32", "macos\n"], ["darwin", "windows\n"], ["freebsd", "deb"]] as const) expect(detect(platform, marker)).toBe("unknown");
     expect(detectPackageType({ isPackaged: false, platform: "linux", resourcesPath: "/x", readMarker: vi.fn(), inspectAppImage: vi.fn() })).toBe("development");
+
+    const windowsMarker = vi.fn((path: string) => path === "D:\\Program Files\\CivCom\\resources\\package-type" ? "windows\n" : undefined);
+    expect(detectPackageType({
+      isPackaged: true,
+      platform: "win32",
+      resourcesPath: "D:\\Program Files\\CivCom\\resources",
+      readMarker: windowsMarker,
+      inspectAppImage: vi.fn()
+    })).toBe("windows");
+    expect(windowsMarker).toHaveBeenCalledExactlyOnceWith("D:\\Program Files\\CivCom\\resources\\package-type");
   });
 
   it("keeps DEB and unknown Linux packages completely outside electron-updater", async () => {
@@ -115,13 +168,51 @@ describe("packaged update policy", () => {
       const loadUpdater = vi.fn(() => { throw new Error("must-not-import-electron-updater"); });
       const openManual = vi.fn().mockResolvedValue(undefined);
       const clock = timers();
-      const controller = await createUpdateController({ packageType, loadUpdater, openManual, onError: vi.fn(), ...clock });
+      const controller = await createUpdateController({ updatePolicy: "production", packageType, loadUpdater, openManual, onError: vi.fn(), ...clock });
       await expect(controller.start()).resolves.toBeUndefined();
       await expect(controller.manual()).resolves.toBeUndefined();
       controller.stop();
       expect(loadUpdater).not.toHaveBeenCalled();
       expect(clock.every).not.toHaveBeenCalled();
       expect(openManual).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("keeps every pilot package outside electron-updater and shows only the pilot notice manually", async () => {
+    const { createUpdateController } = await loadModule();
+    for (const packageType of ["windows", "macos", "appimage", "deb"] as const) {
+      const loadUpdater = vi.fn(() => { throw new Error("pilot-must-not-import-electron-updater"); });
+      const openManual = vi.fn(() => { throw new Error("pilot-must-not-open-release-page"); });
+      const showPilotNotice = vi.fn().mockResolvedValue(undefined);
+      const clock = timers();
+      const controller = await createUpdateController({ updatePolicy: "pilot", packageType, loadUpdater, openManual, showPilotNotice, onError: vi.fn(), ...clock });
+      expect(controller.enabled).toBe(true);
+      await expect(controller.start()).resolves.toBeUndefined();
+      await expect(controller.manual()).resolves.toBeUndefined();
+      controller.stop();
+      expect(loadUpdater).not.toHaveBeenCalled();
+      expect(openManual).not.toHaveBeenCalled();
+      expect(showPilotNotice).toHaveBeenCalledOnce();
+      expect(clock.every).not.toHaveBeenCalled();
+      expect(clock.clearEvery).not.toHaveBeenCalled();
+    }
+  });
+
+  it("fails closed without an exact production or pilot policy", async () => {
+    const { createUpdateController } = await loadModule();
+    for (const updatePolicy of [undefined, "disabled", "hostile"] ) {
+      const loadUpdater = vi.fn(() => { throw new Error("unknown-policy-must-not-import"); });
+      const openManual = vi.fn();
+      const showPilotNotice = vi.fn();
+      const clock = timers();
+      const controller = await createUpdateController({ updatePolicy, packageType: "windows", loadUpdater, openManual, showPilotNotice, onError: vi.fn(), ...clock });
+      expect(controller.enabled).toBe(false);
+      await controller.start();
+      await controller.manual();
+      expect(loadUpdater).not.toHaveBeenCalled();
+      expect(openManual).not.toHaveBeenCalled();
+      expect(showPilotNotice).not.toHaveBeenCalled();
+      expect(clock.every).not.toHaveBeenCalled();
     }
   });
 
@@ -132,7 +223,7 @@ describe("packaged update policy", () => {
     let resolveCheck: (() => void) | undefined;
     updater.checkForUpdates = vi.fn(() => new Promise<void>((resolve) => { resolveCheck = resolve; }));
     const clock = timers();
-    const controller = await createUpdateController({ packageType: "macos", loadUpdater: vi.fn().mockResolvedValue(updater), openManual: vi.fn(), onError: vi.fn(), confirmRestart: vi.fn(), ...clock });
+    const controller = await createUpdateController({ updatePolicy: "production", packageType: "macos", loadUpdater: vi.fn().mockResolvedValue(updater), openManual: vi.fn(), onError: vi.fn(), confirmRestart: vi.fn(), ...clock });
     expect(policyWrites).toEqual(["logger", "autoDownload", "autoInstallOnAppQuit", "allowPrerelease", "allowDowngrade", "disableWebInstaller"]);
     expect(updater.checkForUpdates).not.toHaveBeenCalled();
     expect(updater.autoDownload).toBe(true);
@@ -159,7 +250,7 @@ describe("packaged update policy", () => {
     for (const confirmed of [false, true]) {
       const updater = fakeUpdater();
       const confirmRestart = vi.fn().mockResolvedValue(confirmed);
-      const controller = await createUpdateController({ packageType: "windows", loadUpdater: vi.fn().mockResolvedValue(updater), openManual: vi.fn(), onError: vi.fn(), confirmRestart, ...timers() });
+      const controller = await createUpdateController({ updatePolicy: "production", packageType: "windows", loadUpdater: vi.fn().mockResolvedValue(updater), openManual: vi.fn(), onError: vi.fn(), confirmRestart, ...timers() });
       const downloaded = updater.listeners.get("update-downloaded");
       expect(downloaded).toBeTypeOf("function");
       await downloaded?.();
@@ -174,6 +265,7 @@ describe("packaged update policy", () => {
     const { createUpdateController } = await loadModule();
     const onError = vi.fn(() => { throw new Error("hostile-error-reporter"); });
     const controller = await createUpdateController({
+      updatePolicy: "production",
       packageType: "appimage",
       loadUpdater: vi.fn().mockRejectedValue(new Error("load failed")),
       openManual: vi.fn(() => { throw new Error("open failed"); }),

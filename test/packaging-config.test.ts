@@ -72,6 +72,10 @@ describe("effective electron-builder configuration", () => {
     expect(config.electronFuses).toBeUndefined();
     expect(config.asarUnpack).toBeUndefined();
     expect(config.afterPack).toBe("scripts/after-pack.mjs");
+    expect(config.extraMetadata).toMatchObject({
+      desktopName: "info.soia.civcom.desktop",
+      civcomUpdatePolicy: "pilot-disabled-v1"
+    });
     expect(config.extraResources).toEqual([{ from: "build/package-type-windows", to: "package-type" }]);
     expect(config.files).toEqual([
       "package.json",
@@ -106,6 +110,7 @@ describe("effective electron-builder configuration", () => {
       NSScreenCaptureUsageDescription: "CivCom udostępnia wybrany ekran lub okno wyłącznie po potwierdzeniu użytkownika.",
       NSAudioCaptureUsageDescription: "CivCom może przechwycić dźwięk wybranego źródła podczas udostępniania za zgodą użytkownika."
     });
+    expect(config.extraMetadata.civcomUpdatePolicy).toBe("pilot-disabled-v1");
     expect(config.extraResources).toEqual([{ from: "build/package-type-macos", to: "package-type" }]);
   });
 
@@ -134,7 +139,10 @@ describe("effective electron-builder configuration", () => {
         Keywords: "CivCom;Matrix;komunikator;wiadomości;"
       } }
     });
-    expect(config.extraMetadata).toMatchObject({ desktopName: "info.soia.civcom.desktop" });
+    expect(config.extraMetadata).toMatchObject({
+      desktopName: "info.soia.civcom.desktop",
+      civcomUpdatePolicy: "pilot-disabled-v1"
+    });
     expect(config.extraResources).toBeUndefined();
     expect(config.appImage).toMatchObject({ compression: "zstd" });
     expect(config.deb).toMatchObject({ maintainer: "Test Organisation <release@example.org>", packageCategory: "net", packageName: "civcom" });
@@ -173,6 +181,7 @@ describe("effective electron-builder configuration", () => {
         signingHashAlgorithms: ["sha256"]
       }
     });
+    expect(windows.extraMetadata.civcomUpdatePolicy).toBe("production-enabled-v1");
 
     const reorderedWindows = factory({
       CIVCOM_BUILD_MODE: "production",
@@ -194,6 +203,7 @@ describe("effective electron-builder configuration", () => {
       APPLE_API_ISSUER: "11111111-2222-1333-8444-555555555555"
     });
     expect(macos.mac).toMatchObject({ forceCodeSigning: true, hardenedRuntime: true, strictVerify: true, notarize: true });
+    expect(macos.extraMetadata.civcomUpdatePolicy).toBe("production-enabled-v1");
     expect(macos.mac.identity).toBeUndefined();
   });
 

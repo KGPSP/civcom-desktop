@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createPackage } from "@electron/asar";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,7 +8,7 @@ const moduleUrl = new URL("../scripts/packaged-app-policy.mjs", import.meta.url)
 
 type PackagedPolicy = Readonly<{
   resolvePackagedLayout(input: Readonly<{ target: string; releaseDirectory: string }>): Readonly<{ appRoot: string; executable: string; resources: string; infoPlist?: string; smokeExecutable: string }>;
-  verifyPackagedLayout(layout: Readonly<{ appRoot: string; executable: string; resources: string; infoPlist?: string; smokeExecutable: string }>, expectedMarker: string): Promise<void>;
+  verifyPackagedLayout(layout: Readonly<{ appRoot: string; executable: string; resources: string; infoPlist?: string; smokeExecutable: string }>, expectedMarker: string, expectedMode: "pilot" | "production", expectedVersion: string): Promise<void>;
   createLaunchPlan(input: Readonly<{ target: string; layout: Readonly<{ appRoot: string; executable: string; resources: string; infoPlist?: string; smokeExecutable: string }>; userDataDirectory: string; environment?: Readonly<Record<string, string | undefined>> }>): Readonly<{ command: string; args: readonly string[]; environment: Readonly<Record<string, string>> }>;
   createLinuxInspectionPlan(input: Readonly<{ layout: Readonly<{ smokeExecutable: string }>; scratchDirectory: string }>): Readonly<{ deb: Readonly<{ command: string; args: readonly string[]; desktopFile: string }>; appImage: Readonly<{ command: string; args: readonly string[]; cwd: string; desktopFile: string }> }>;
   createTamperProbePlan(input: Readonly<{ target: string; layout: Readonly<{ appRoot: string }>; scratchDirectory: string }>): Readonly<{ attempts: readonly Readonly<{ kind: string; copyRoot: string; executable: string; resources: string; userData: string; smokeResult: string }>[] }>;
@@ -29,11 +30,33 @@ async function loadModule(): Promise<PackagedPolicy> {
   return await import(moduleUrl) as PackagedPolicy;
 }
 
+async function writePackagedAsar(resources: string, updatePolicy: string): Promise<void> {
+  const source = await mkdtemp(join(tmpdir(), "civcom-asar-source-"));
+  await writeFile(join(source, "package.json"), `${JSON.stringify({
+    name: "civcom-desktop",
+    version: "0.1.0",
+    civcomUpdatePolicy: updatePolicy
+  })}\n`);
+  const destination = join(resources, "app.asar");
+  await rm(destination, { force: true });
+  await createPackage(source, destination);
+}
+
+function nativeVerificationLayout(root: string) {
+  const appRoot = join(root, "application");
+  return Object.freeze({
+    appRoot,
+    executable: join(appRoot, "CivCom"),
+    resources: join(appRoot, "resources"),
+    smokeExecutable: join(appRoot, "CivCom")
+  });
+}
+
 describe("packaged application verification policy", () => {
   it("does not depend on a hoisted PE parser and proves Windows ASAR enforcement with native tamper probes", async () => {
     const verifier = await readFile(new URL("../scripts/verify-packaged-app.mjs", import.meta.url), "utf8");
     expect(verifier).not.toMatch(/require\(["']resedit["']\)/);
-    expect(verifier).toContain("verifyAsarTamperResistance(target, layout)");
+    expect(verifier).toContain("verifyAsarTamperResistance(target, layout, mode)");
   });
 
   it("resolves only canonical native unpacked layouts and Linux AppImage smoke target", async () => {
@@ -51,39 +74,67 @@ describe("packaged application verification policy", () => {
   });
 
   it("requires regular app.asar/executable/marker files and rejects loose or linked application code", async () => {
-    const { resolvePackagedLayout, verifyPackagedLayout } = await loadModule();
+    const { verifyPackagedLayout } = await loadModule();
     const releaseDirectory = await mkdtemp(join(tmpdir(), "civcom-packaged-layout-"));
-    const layout = resolvePackagedLayout({ target: "macos", releaseDirectory });
+    const layout = nativeVerificationLayout(releaseDirectory);
     await mkdir(layout.resources, { recursive: true });
     await mkdir(dirname(layout.executable), { recursive: true });
     await writeFile(layout.executable, "binary");
-    await writeFile(join(layout.resources, "app.asar"), "asar");
+    await writePackagedAsar(layout.resources, "pilot-disabled-v1");
     await writeFile(join(layout.resources, "package-type"), "macos\n");
-    await expect(verifyPackagedLayout(layout, "macos")).resolves.toBeUndefined();
+    await expect(verifyPackagedLayout(layout, "macos", "pilot", "0.1.0")).resolves.toBeUndefined();
     await mkdir(join(layout.resources, "app"));
-    await expect(verifyPackagedLayout(layout, "macos")).rejects.toThrow();
+    await expect(verifyPackagedLayout(layout, "macos", "pilot", "0.1.0")).rejects.toThrow();
 
     const linkedRelease = await mkdtemp(join(tmpdir(), "civcom-packaged-linked-"));
-    const linked = resolvePackagedLayout({ target: "linux", releaseDirectory: linkedRelease });
+    const linked = nativeVerificationLayout(linkedRelease);
     await mkdir(linked.resources, { recursive: true });
     await writeFile(linked.executable, "binary");
-    await writeFile(join(linked.resources, "real.asar"), "asar");
+    const realAsarSource = await mkdtemp(join(tmpdir(), "civcom-linked-asar-source-"));
+    await writeFile(join(realAsarSource, "package.json"), '{"name":"civcom-desktop","version":"0.1.0","civcomUpdatePolicy":"pilot-disabled-v1"}\n');
+    await createPackage(realAsarSource, join(linked.resources, "real.asar"));
     await symlink(join(linked.resources, "real.asar"), join(linked.resources, "app.asar"));
     await writeFile(join(linked.resources, "package-type"), "deb\n");
-    await expect(verifyPackagedLayout(linked, "deb")).rejects.toThrow();
+    await expect(verifyPackagedLayout(linked, "deb", "pilot", "0.1.0")).rejects.toThrow();
+  });
+
+  it("requires the ASAR package metadata to carry the updater policy for the verified build mode", async () => {
+    const { resolvePackagedLayout, verifyPackagedLayout } = await loadModule();
+    const layout = resolvePackagedLayout({ target: "windows", releaseDirectory: "C:\\release" });
+    const fixture = async (policy: string) => {
+      const releaseDirectory = await mkdtemp(join(tmpdir(), "civcom-packaged-update-policy-"));
+      const portableLayout = {
+        ...layout,
+        appRoot: releaseDirectory,
+        executable: join(releaseDirectory, "CivCom.exe"),
+        resources: join(releaseDirectory, "resources")
+      };
+      await mkdir(portableLayout.resources, { recursive: true });
+      await writeFile(portableLayout.executable, "binary");
+      await writeFile(join(portableLayout.resources, "package-type"), "windows\n");
+      await writePackagedAsar(portableLayout.resources, policy);
+      return portableLayout;
+    };
+    const pilot = await fixture("pilot-disabled-v1");
+    await expect(verifyPackagedLayout(pilot, "windows", "pilot", "0.1.0")).resolves.toBeUndefined();
+    await expect(verifyPackagedLayout(pilot, "windows", "production", "0.1.0")).rejects.toThrow(/update policy/i);
+
+    const production = await fixture("production-enabled-v1");
+    await expect(verifyPackagedLayout(production, "windows", "production", "0.1.0")).resolves.toBeUndefined();
+    await expect(verifyPackagedLayout(production, "windows", "pilot", "0.1.0")).rejects.toThrow(/update policy/i);
   });
 
   it("accepts only the raw DEB marker emitted by the pinned Linux packager", async () => {
-    const { resolvePackagedLayout, verifyPackagedLayout } = await loadModule();
+    const { verifyPackagedLayout } = await loadModule();
     const releaseDirectory = await mkdtemp(join(tmpdir(), "civcom-packaged-deb-marker-"));
-    const layout = resolvePackagedLayout({ target: "linux", releaseDirectory });
+    const layout = nativeVerificationLayout(releaseDirectory);
     await mkdir(layout.resources, { recursive: true });
     await writeFile(layout.executable, "binary");
-    await writeFile(join(layout.resources, "app.asar"), "asar");
+    await writePackagedAsar(layout.resources, "pilot-disabled-v1");
     await writeFile(join(layout.resources, "package-type"), "deb");
-    await expect(verifyPackagedLayout(layout, "deb")).resolves.toBeUndefined();
+    await expect(verifyPackagedLayout(layout, "deb", "pilot", "0.1.0")).resolves.toBeUndefined();
     await writeFile(join(layout.resources, "package-type"), "deb\n");
-    await expect(verifyPackagedLayout(layout, "deb")).rejects.toThrow("Unexpected package marker");
+    await expect(verifyPackagedLayout(layout, "deb", "pilot", "0.1.0")).rejects.toThrow("Unexpected package marker");
   });
 
   it("creates a native offline launch without debugging or sandbox bypass flags", async () => {

@@ -10,7 +10,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveVerifiedAppImageRuntime } from "../src/desktop/appimage-runtime.js";
+import { hasExpectedAppImageRuntimePaths, isType2AppImageHeader, resolveVerifiedAppImageRuntime } from "../src/desktop/appimage-runtime.js";
 
 const roots: string[] = [];
 
@@ -56,12 +56,27 @@ function fixture(): Readonly<{
 }
 
 describe("AppImage runtime identity", () => {
-  it("accepts only a canonical executable Type2 AppImage bound to the builder AppDir runtime", () => {
+  it("validates the Type2 header and Linux path layout without host filesystem semantics", () => {
+    const input = {
+      appImagePath: "/opt/CivCom-Linux-x86_64.AppImage",
+      appDir: "/tmp/.mount_CivCom",
+      executablePath: "/tmp/.mount_CivCom/civcom",
+      resourcesPath: "/tmp/.mount_CivCom/resources"
+    };
+    expect(isType2AppImageHeader(type2Header())).toBe(true);
+    expect(isType2AppImageHeader(type2Header(1))).toBe(false);
+    expect(isType2AppImageHeader(type2Header().subarray(0, 10))).toBe(false);
+    expect(hasExpectedAppImageRuntimePaths(input)).toBe(true);
+    expect(hasExpectedAppImageRuntimePaths({ ...input, executablePath: "/tmp/outside/civcom" })).toBe(false);
+    expect(hasExpectedAppImageRuntimePaths({ ...input, appDir: "D:\\Temp\\.mount_CivCom" })).toBe(false);
+  });
+
+  it.runIf(process.platform !== "win32")("accepts only a canonical executable Type2 AppImage bound to the builder AppDir runtime", () => {
     const value = fixture();
     expect(resolveVerifiedAppImageRuntime(value.input)).toBe(value.appImagePath);
   });
 
-  it("rejects an arbitrary executable, Type1 image, truncated header, or non-executable image", () => {
+  it.runIf(process.platform !== "win32")("rejects an arbitrary executable, Type1 image, truncated header, or non-executable image", () => {
     for (const mutate of [
       (path: string) => writeFileSync(path, Buffer.from("not an AppImage")),
       (path: string) => writeFileSync(path, type2Header(1)),
@@ -74,7 +89,7 @@ describe("AppImage runtime identity", () => {
     }
   });
 
-  it("rejects relative, symlinked, non-canonical, and control-character APPIMAGE values", () => {
+  it.runIf(process.platform !== "win32")("rejects relative, symlinked, non-canonical, and control-character APPIMAGE values", () => {
     const value = fixture();
     const symlink = join(value.root, "linked.AppImage");
     symlinkSync(value.appImagePath, symlink);
@@ -88,7 +103,7 @@ describe("AppImage runtime identity", () => {
     }
   });
 
-  it("rejects APPDIR, executable, or resources values that are not the exact mounted runtime", () => {
+  it.runIf(process.platform !== "win32")("rejects APPDIR, executable, or resources values that are not the exact mounted runtime", () => {
     const value = fixture();
     const outside = join(value.root, "outside");
     mkdirSync(outside);
@@ -107,7 +122,7 @@ describe("AppImage runtime identity", () => {
     }
   });
 
-  it("rejects missing, symlinked, or non-executable AppRun and civcom runtime entries", () => {
+  it.runIf(process.platform !== "win32")("rejects missing, symlinked, or non-executable AppRun and civcom runtime entries", () => {
     {
       const value = fixture();
       chmodSync(join(value.appDir, "AppRun"), 0o644);
@@ -124,5 +139,10 @@ describe("AppImage runtime identity", () => {
       chmodSync(value.executablePath, 0o644);
       expect(resolveVerifiedAppImageRuntime(value.input)).toBeUndefined();
     }
+  });
+
+  it.runIf(process.platform === "win32")("fails closed for a host-native Windows fixture instead of emulating Linux filesystem guarantees", () => {
+    const value = fixture();
+    expect(resolveVerifiedAppImageRuntime(value.input)).toBeUndefined();
   });
 });

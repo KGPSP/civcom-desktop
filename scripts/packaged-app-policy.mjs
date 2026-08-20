@@ -1,5 +1,6 @@
 import { lstat, readFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
+import { extractFile } from "@electron/asar";
 
 const LINUX_DESKTOP_FILE = "info.soia.civcom.desktop";
 const LINUX_APP_IMAGE = "CivCom-Linux-x86_64.AppImage";
@@ -19,28 +20,39 @@ function plainRecord(value, message) {
   return value;
 }
 
-function absoluteDirectory(value, windows = false) {
+function absoluteDirectory(value, pathApi) {
   if (typeof value !== "string" || value === "" || [...value].some((character) => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127)) throw new Error("Invalid release directory");
-  if (!(windows ? win32.isAbsolute(value) : isAbsolute(value))) throw new Error("Release directory must be absolute");
+  if (!pathApi.isAbsolute(value)) throw new Error("Release directory must be absolute");
   return value;
+}
+
+function targetPathApi(target) {
+  if (target === "windows") return win32;
+  if (target === "macos" || target === "linux") return posix;
+  throw new Error("Unsupported packaged target");
+}
+
+export function resolvePackagedTargetPath(target, root, segments) {
+  const pathApi = targetPathApi(target);
+  const absoluteRoot = absoluteDirectory(root, pathApi);
+  if (!Array.isArray(segments) || segments.some((segment) => typeof segment !== "string" || segment === "" || segment === "." || segment === ".." || /[\\/]/.test(segment) || [...segment].some((character) => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127))) throw new Error("Invalid packaged path segments");
+  return pathApi.join(absoluteRoot, ...segments);
 }
 
 export function resolvePackagedLayout(input) {
   if (input === null || typeof input !== "object") throw new Error("Invalid packaged-layout input");
   const target = input.target;
   if (target === "windows") {
-    const release = absoluteDirectory(input.releaseDirectory, true);
-    const appRoot = win32.join(release, "win-unpacked");
-    return Object.freeze({ appRoot, executable: win32.join(appRoot, "CivCom.exe"), resources: win32.join(appRoot, "resources"), smokeExecutable: win32.join(appRoot, "CivCom.exe") });
+    const appRoot = resolvePackagedTargetPath(target, input.releaseDirectory, ["win-unpacked"]);
+    return Object.freeze({ appRoot, executable: resolvePackagedTargetPath(target, appRoot, ["CivCom.exe"]), resources: resolvePackagedTargetPath(target, appRoot, ["resources"]), smokeExecutable: resolvePackagedTargetPath(target, appRoot, ["CivCom.exe"]) });
   }
-  const release = absoluteDirectory(input.releaseDirectory);
   if (target === "macos") {
-    const appRoot = join(release, "mac-universal", "CivCom.app");
-    return Object.freeze({ appRoot, executable: join(appRoot, "Contents", "MacOS", "CivCom"), resources: join(appRoot, "Contents", "Resources"), infoPlist: join(appRoot, "Contents", "Info.plist"), smokeExecutable: join(appRoot, "Contents", "MacOS", "CivCom") });
+    const appRoot = resolvePackagedTargetPath(target, input.releaseDirectory, ["mac-universal", "CivCom.app"]);
+    return Object.freeze({ appRoot, executable: resolvePackagedTargetPath(target, appRoot, ["Contents", "MacOS", "CivCom"]), resources: resolvePackagedTargetPath(target, appRoot, ["Contents", "Resources"]), infoPlist: resolvePackagedTargetPath(target, appRoot, ["Contents", "Info.plist"]), smokeExecutable: resolvePackagedTargetPath(target, appRoot, ["Contents", "MacOS", "CivCom"]) });
   }
   if (target === "linux") {
-    const appRoot = join(release, "linux-unpacked");
-    return Object.freeze({ appRoot, executable: join(appRoot, "civcom"), resources: join(appRoot, "resources"), smokeExecutable: join(release, "CivCom-Linux-x86_64.AppImage") });
+    const appRoot = resolvePackagedTargetPath(target, input.releaseDirectory, ["linux-unpacked"]);
+    return Object.freeze({ appRoot, executable: resolvePackagedTargetPath(target, appRoot, ["civcom"]), resources: resolvePackagedTargetPath(target, appRoot, ["resources"]), smokeExecutable: resolvePackagedTargetPath(target, input.releaseDirectory, [LINUX_APP_IMAGE]) });
   }
   throw new Error("Unsupported packaged target");
 }
@@ -50,14 +62,32 @@ async function requireRegular(path, label) {
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size <= 0) throw new Error(`Invalid packaged ${label}`);
 }
 
-export async function verifyPackagedLayout(layoutValue, expectedMarker) {
+function validatePackagedUpdatePolicy(value, expectedMode, expectedVersion) {
+  const metadata = plainRecord(value, "Invalid packaged update policy metadata");
+  if (expectedMode !== "pilot" && expectedMode !== "production") throw new Error("Invalid packaged update policy mode");
+  if (typeof expectedVersion !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(expectedVersion)) throw new Error("Invalid packaged update policy version");
+  const policy = Object.getOwnPropertyDescriptor(metadata, "civcomUpdatePolicy");
+  const expectedPolicy = expectedMode === "pilot" ? "pilot-disabled-v1" : "production-enabled-v1";
+  if (metadata.name !== "civcom-desktop" || metadata.version !== expectedVersion || policy === undefined || !("value" in policy) || policy.value !== expectedPolicy) throw new Error("Unexpected packaged update policy");
+}
+
+export async function verifyPackagedLayout(layoutValue, expectedMarker, expectedMode, expectedVersion) {
   const layout = plainRecord(layoutValue, "Invalid packaged layout");
   if (typeof expectedMarker !== "string" || !/^(windows|macos|deb)$/.test(expectedMarker)) throw new Error("Invalid package marker expectation");
   for (const key of ["appRoot", "executable", "resources"]) if (typeof layout[key] !== "string" || layout[key] === "") throw new Error("Incomplete packaged layout");
   const appRoot = await lstat(layout.appRoot);
   if (!appRoot.isDirectory() || appRoot.isSymbolicLink()) throw new Error("Invalid packaged application root");
   await requireRegular(layout.executable, "executable");
-  await requireRegular(join(layout.resources, "app.asar"), "ASAR");
+  const asarPath = join(layout.resources, "app.asar");
+  await requireRegular(asarPath, "ASAR");
+  try {
+    const serialized = extractFile(asarPath, "package.json");
+    if (!Buffer.isBuffer(serialized) || serialized.length === 0 || serialized.length > 64 * 1024) throw new Error("Invalid packaged update policy metadata");
+    validatePackagedUpdatePolicy(JSON.parse(serialized.toString("utf8")), expectedMode, expectedVersion);
+  } catch (error) {
+    if (error instanceof Error && /update policy/i.test(error.message)) throw error;
+    throw new Error("Invalid packaged update policy metadata", { cause: error });
+  }
   await requireRegular(join(layout.resources, "package-type"), "package marker");
   try {
     await lstat(join(layout.resources, "app"));
@@ -74,7 +104,7 @@ export function createLaunchPlan(input) {
   const layout = plainRecord(input.layout, "Invalid smoke layout");
   if (typeof layout.smokeExecutable !== "string" || layout.smokeExecutable === "") throw new Error("Missing smoke executable");
   const userData = input.userDataDirectory;
-  if (typeof userData !== "string" || (!isAbsolute(userData) && !win32.isAbsolute(userData)) || [...userData].some((character) => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127)) throw new Error("Invalid smoke user-data directory");
+  if (typeof userData !== "string" || !targetPathApi(input.target).isAbsolute(userData) || [...userData].some((character) => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127)) throw new Error("Invalid smoke user-data directory");
   const environment = {};
   const source = input.environment ?? {};
   const allowedEnvironment = new Set(["PATH", "SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "TMP", "TEMP", "TMPDIR", "HOME", "USERPROFILE", "LANG", "LC_ALL", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]);
@@ -93,13 +123,13 @@ export function createLinuxInspectionPlan(input) {
   const layout = plainRecord(input?.layout, "Invalid Linux inspection layout");
   const appImage = layout.smokeExecutable;
   const scratch = input?.scratchDirectory;
-  if (typeof appImage !== "string" || !isAbsolute(appImage) || basename(appImage) !== LINUX_APP_IMAGE || typeof scratch !== "string" || !isAbsolute(scratch)) throw new Error("Invalid Linux inspection paths");
-  const release = dirname(appImage);
-  const debRoot = join(scratch, "deb");
-  const appImageRoot = join(scratch, "appimage");
+  if (typeof appImage !== "string" || !posix.isAbsolute(appImage) || posix.basename(appImage) !== LINUX_APP_IMAGE || typeof scratch !== "string" || !posix.isAbsolute(scratch)) throw new Error("Invalid Linux inspection paths");
+  const release = posix.dirname(appImage);
+  const debRoot = posix.join(scratch, "deb");
+  const appImageRoot = posix.join(scratch, "appimage");
   return Object.freeze({
-    deb: Object.freeze({ command: "dpkg-deb", args: Object.freeze(["--extract", join(release, LINUX_DEB), debRoot]), desktopFile: join(debRoot, "usr", "share", "applications", LINUX_DESKTOP_FILE) }),
-    appImage: Object.freeze({ command: appImage, args: Object.freeze(["--appimage-extract"]), cwd: appImageRoot, desktopFile: join(appImageRoot, "squashfs-root", LINUX_DESKTOP_FILE) })
+    deb: Object.freeze({ command: "dpkg-deb", args: Object.freeze(["--extract", posix.join(release, LINUX_DEB), debRoot]), desktopFile: posix.join(debRoot, "usr", "share", "applications", LINUX_DESKTOP_FILE) }),
+    appImage: Object.freeze({ command: appImage, args: Object.freeze(["--appimage-extract"]), cwd: appImageRoot, desktopFile: posix.join(appImageRoot, "squashfs-root", LINUX_DESKTOP_FILE) })
   });
 }
 
@@ -108,9 +138,9 @@ export function createTamperProbePlan(input) {
   const target = input?.target;
   const windows = target === "windows";
   if (!windows && target !== "macos") throw new Error("ASAR tamper probes are supported only on Windows and macOS");
-  const appRoot = absoluteDirectory(layout.appRoot, windows);
-  const scratch = absoluteDirectory(input?.scratchDirectory, windows);
-  const pathApi = windows ? win32 : { basename, join };
+  const pathApi = windows ? win32 : posix;
+  const appRoot = absoluteDirectory(layout.appRoot, pathApi);
+  const scratch = absoluteDirectory(input?.scratchDirectory, pathApi);
   const rootName = pathApi.basename(appRoot);
   if ((windows && rootName !== "win-unpacked") || (!windows && rootName !== "CivCom.app")) throw new Error("Unexpected tamper probe application root");
   const attempts = ["tampered-asar", "loose-app"].map((kind) => {

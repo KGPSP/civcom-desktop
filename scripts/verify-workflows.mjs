@@ -1,9 +1,16 @@
 import { readFile, readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictYaml } from "./strict-yaml.mjs";
 
-const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+export function resolveProjectRoot(moduleUrl, platform = process.platform) {
+  const windows = platform === "win32";
+  const pathApi = windows ? win32 : posix;
+  const modulePath = fileURLToPath(moduleUrl, { windows });
+  return pathApi.resolve(pathApi.dirname(modulePath), "..");
+}
+
+const projectRoot = resolveProjectRoot(import.meta.url);
 const PINNED_ACTIONS = Object.freeze({
   "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
   "actions/setup-node": "249970729cb0ef3589644e2896645e5dc5ba9c38",
@@ -22,6 +29,61 @@ const LINUX_SANDBOX_COMMAND = [
   "sudo chown root:root -- \"$sandbox_path\"",
   "sudo chmod 4755 -- \"$sandbox_path\"",
   "test \"$(stat -c '%u:%g:%a' \"$sandbox_path\")\" = \"0:0:4755\""
+].join("\n") + "\n";
+const LINUX_DEB_INSTALL_COMMAND = [
+  "set -eu",
+  "workspace_path=\"$(realpath \"$GITHUB_WORKSPACE\")\"",
+  "package_path=\"$workspace_path/release/CivCom-Linux-x86_64.deb\"",
+  "test -f \"$package_path\"",
+  "test ! -L \"$package_path\"",
+  "test \"$(realpath \"$package_path\")\" = \"$package_path\"",
+  "package_version=\"$(dpkg-deb --field \"$package_path\" Version)\"",
+  "sudo apt-get install --yes --no-install-recommends \"$package_path\"",
+  "installed_version=\"$(dpkg-query --show --showformat='${Version}' civcom)\"",
+  "test \"$installed_version\" = \"$package_version\"",
+  "installed_root=\"/opt/CivCom\"",
+  "test -d \"$installed_root\"",
+  "test ! -L \"$installed_root\"",
+  "test \"$(realpath \"$installed_root\")\" = \"$installed_root\"",
+  "test \"$(stat -c '%u:%g:%a' \"$installed_root\")\" = \"0:0:755\"",
+  "test -f \"$installed_root/civcom\"",
+  "test ! -L \"$installed_root/civcom\"",
+  "test \"$(realpath \"$installed_root/civcom\")\" = \"$installed_root/civcom\"",
+  "test -x \"$installed_root/civcom\"",
+  "test \"$(stat -c '%u:%g:%a' \"$installed_root/civcom\")\" = \"0:0:755\"",
+  "test -d \"$installed_root/resources\"",
+  "test ! -L \"$installed_root/resources\"",
+  "test \"$(realpath \"$installed_root/resources\")\" = \"$installed_root/resources\"",
+  "test \"$(stat -c '%u:%g:%a' \"$installed_root/resources\")\" = \"0:0:755\"",
+  "for runtime_file in app.asar package-type apparmor-profile; do",
+  "  runtime_path=\"$installed_root/resources/$runtime_file\"",
+  "  test -f \"$runtime_path\"",
+  "  test ! -L \"$runtime_path\"",
+  "  test \"$(realpath \"$runtime_path\")\" = \"$runtime_path\"",
+  "  test \"$(stat -c '%u:%g:%a' \"$runtime_path\")\" = \"0:0:644\"",
+  "done",
+  "test -f \"$installed_root/chrome-sandbox\"",
+  "test ! -L \"$installed_root/chrome-sandbox\"",
+  "test \"$(realpath \"$installed_root/chrome-sandbox\")\" = \"$installed_root/chrome-sandbox\"",
+  "sandbox_state=\"$(stat -c '%u:%g:%a' \"$installed_root/chrome-sandbox\")\"",
+  "test \"$sandbox_state\" = \"0:0:755\" || test \"$sandbox_state\" = \"0:0:4755\"",
+  "test -s \"$installed_root/resources/app.asar\"",
+  "test -s \"$installed_root/resources/package-type\"",
+  "test -s \"$installed_root/resources/apparmor-profile\""
+].join("\n") + "\n";
+const PILOT_LINUX_STAGE_COMMAND = [
+  "set -eu",
+  "workspace_path=\"$(realpath \"$GITHUB_WORKSPACE\")\"",
+  "package_path=\"$workspace_path/release/CivCom-Linux-x86_64.deb\"",
+  "output_path=\"$workspace_path/release/staged/linux\"",
+  "test -f \"$package_path\"",
+  "test ! -L \"$package_path\"",
+  "test \"$(realpath \"$package_path\")\" = \"$package_path\"",
+  "mkdir -p -- \"$output_path\"",
+  "test -z \"$(find \"$output_path\" -mindepth 1 -maxdepth 1 -print -quit)\"",
+  "cp --no-dereference -- \"$package_path\" \"$output_path/CivCom-Linux-x86_64.deb\"",
+  "test \"$(find \"$output_path\" -mindepth 1 -maxdepth 1 -type f -name 'CivCom-Linux-x86_64.deb' | wc -l)\" = \"1\"",
+  "test \"$(find \"$output_path\" -mindepth 1 -maxdepth 1 | wc -l)\" = \"1\""
 ].join("\n") + "\n";
 
 function record(value, message) {
@@ -65,6 +127,20 @@ function requireLinuxSandboxAfterInstall(jobValue) {
     || sandbox.if !== "runner.os == 'Linux'"
     || sandbox.shell !== "bash"
     || sandbox.run !== LINUX_SANDBOX_COMMAND) throw new Error("Linux Electron sandbox setup must immediately follow npm ci");
+}
+
+function requireInstalledDebSandboxSmokeGate(jobValue, packageCommand, verifyCommand, condition) {
+  const job = record(jobValue, "Pilot package job must be an object");
+  const jobSteps = steps({ jobs: { checked: job } });
+  const packageIndex = jobSteps.findIndex((step) => step.run === packageCommand);
+  const install = jobSteps[packageIndex + 1];
+  const verify = jobSteps[packageIndex + 2];
+  if (packageIndex < 0
+    || install?.name !== "Install Linux DEB for sandboxed smoke"
+    || install.if !== condition
+    || install.shell !== "bash"
+    || install.run !== LINUX_DEB_INSTALL_COMMAND
+    || verify?.run !== verifyCommand) throw new Error("Linux verification requires an installed DEB sandbox smoke gate");
 }
 
 function validateTopLevel(workflow, source) {
@@ -125,6 +201,14 @@ function validatePilot(workflow, source) {
   const jobs = record(workflow.jobs, "Pilot jobs missing");
   const packageJob = record(jobs.package, "Pilot package matrix missing");
   requireLinuxSandboxAfterInstall(packageJob);
+  requireInstalledDebSandboxSmokeGate(packageJob, "npm run ${{ matrix.package-script }}", "npm run package:verify -- --mode pilot --target ${{ matrix.target }}", "matrix.target == 'linux'");
+  const packageSteps = steps({ jobs: { checked: packageJob } });
+  const regularStage = packageSteps.find((step) => step.run === "node scripts/stage-platform-artifacts.mjs ${{ matrix.target }}");
+  const linuxStage = packageSteps.find((step) => step.name === "Stage Linux DEB only for the internal pilot");
+  if (regularStage?.if !== "matrix.target != 'linux'"
+    || linuxStage?.if !== "matrix.target == 'linux'"
+    || linuxStage?.shell !== "bash"
+    || linuxStage?.run !== PILOT_LINUX_STAGE_COMMAND) throw new Error("Linux DEB-only pilot staging is required");
   const matrix = record(record(record(packageJob.strategy, "Pilot strategy missing").matrix, "Pilot matrix missing"), "Pilot matrix invalid");
   if (!Array.isArray(matrix.include) || matrix.include.length !== 3 || new Set(matrix.include.map((entry) => entry.target)).size !== 3) throw new Error("Pilot must cover three native targets");
 }
@@ -156,6 +240,7 @@ function validateRelease(workflow, source) {
   if (preflightEnvironment.CIVCOM_ALLOW_ANONYMOUS_PRODUCTION_SMOKE !== "confirmed" || /\$\{\{\s*secrets\./.test(JSON.stringify(preflight))) throw new Error("Release preflight live smoke must be constant and secret-free");
   for (const name of ["build-windows", "build-macos", "build-linux"]) if (record(jobs[name], `Release build missing: ${name}`).needs !== "preflight") throw new Error(`Release build does not depend on live preflight: ${name}`);
   requireLinuxSandboxAfterInstall(jobs["build-linux"]);
+  requireInstalledDebSandboxSmokeGate(jobs["build-linux"], "npm run package:linux", "npm run package:verify -- --mode production --target linux", undefined);
   const publishPermissions = record(record(jobs.publish, "Publication job missing").permissions, "Publication permissions missing");
   if (publishPermissions.contents !== "write") throw new Error("Final publication job requires contents write");
   const publication = commandText({ jobs: { publish: jobs.publish } });
@@ -185,17 +270,20 @@ function validateRelease(workflow, source) {
 
 export function validateWorkflowSource(name, source) {
   if (typeof source !== "string" || source.length === 0 || source.length > 256 * 1024) throw new Error("Invalid workflow source");
+  if (/\r(?!\n)/.test(source)) throw new Error("Invalid workflow source");
+  const normalizedSource = source.replaceAll("\r\n", "\n");
   let workflow;
-  try { workflow = record(parseStrictYaml(source), "Workflow YAML root must be an object"); } catch { throw new Error("Invalid workflow YAML"); }
-  if (name === "ci.yml") validateCi(workflow, source);
-  else if (name === "anonymous-live-smoke.yml") validateAnonymousLiveSmoke(workflow, source);
-  else if (name === "pilot.yml") validatePilot(workflow, source);
-  else if (name === "release.yml") validateRelease(workflow, source);
+  try { workflow = record(parseStrictYaml(normalizedSource), "Workflow YAML root must be an object"); } catch { throw new Error("Invalid workflow YAML"); }
+  if (name === "ci.yml") validateCi(workflow, normalizedSource);
+  else if (name === "anonymous-live-smoke.yml") validateAnonymousLiveSmoke(workflow, normalizedSource);
+  else if (name === "pilot.yml") validatePilot(workflow, normalizedSource);
+  else if (name === "release.yml") validateRelease(workflow, normalizedSource);
   else throw new Error("Unexpected workflow filename");
 }
 
 function validateDependabot(source) {
-  const config = record(parseStrictYaml(source), "Dependabot YAML root must be an object");
+  if (typeof source !== "string" || /\r(?!\n)/.test(source)) throw new Error("Invalid Dependabot source");
+  const config = record(parseStrictYaml(source.replaceAll("\r\n", "\n")), "Dependabot YAML root must be an object");
   if (config.version !== 2 || !Array.isArray(config.updates) || config.updates.length !== 2) throw new Error("Dependabot policy missing");
   const ecosystems = new Set(config.updates.map((entry) => {
     const update = record(entry, "Invalid Dependabot entry");

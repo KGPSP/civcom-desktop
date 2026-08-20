@@ -1,9 +1,15 @@
-import { isAbsolute, join } from "node:path";
+import { posix, win32 } from "node:path";
 
 export const LATEST_RELEASE_PAGE = "https://github.com/KGPSP/civcom-desktop/releases/latest";
+export const PILOT_UPDATE_NOTICE = Object.freeze({
+  title: "CivCom — wersja pilotażowa",
+  message: "Aktualizacje automatyczne są wyłączone w tej niepodpisanej wersji pilotażowej CivCom.",
+  detail: "Nową wersję przekaże opiekun pilota."
+});
 const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 export type PackageType = "development" | "windows" | "macos" | "appimage" | "deb" | "unknown";
+export type PackagedUpdatePolicy = "pilot" | "production" | "disabled";
 
 export type UpdateController = Readonly<{
   enabled: boolean;
@@ -64,6 +70,27 @@ function safeString(value: unknown): value is string {
   });
 }
 
+export function detectPackagedUpdatePolicy(input: Readonly<{
+  isPackaged: boolean;
+  appPath: string;
+  readMetadata(path: string): string | undefined;
+}>): PackagedUpdatePolicy {
+  if (input.isPackaged !== true || !safeString(input.appPath)) return "disabled";
+  const pathApi = process.platform === "win32" ? win32 : posix;
+  if (!pathApi.isAbsolute(input.appPath)) return "disabled";
+  try {
+    const serialized = input.readMetadata(pathApi.join(input.appPath, "package.json"));
+    if (typeof serialized !== "string" || serialized.length === 0 || serialized.length > 64 * 1024) return "disabled";
+    const metadata: unknown = JSON.parse(serialized);
+    if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return "disabled";
+    const descriptor = Object.getOwnPropertyDescriptor(metadata, "civcomUpdatePolicy");
+    if (descriptor === undefined || !("value" in descriptor)) return "disabled";
+    if (descriptor.value === "pilot-disabled-v1") return "pilot";
+    if (descriptor.value === "production-enabled-v1") return "production";
+  } catch { /* malformed or inaccessible packaged metadata disables updates */ }
+  return "disabled";
+}
+
 export function detectPackageType(input: Readonly<{
   isPackaged: boolean;
   platform: string;
@@ -74,11 +101,13 @@ export function detectPackageType(input: Readonly<{
 }>): PackageType {
   if (!input.isPackaged) return "development";
   try {
-    if (!safeString(input.resourcesPath) || !isAbsolute(input.resourcesPath)) return "unknown";
+    if (!safeString(input.resourcesPath)) return "unknown";
+    const pathApi = input.platform === "win32" ? win32 : input.platform === "darwin" || input.platform === "linux" ? posix : undefined;
+    if (pathApi === undefined || !pathApi.isAbsolute(input.resourcesPath)) return "unknown";
     let marker: string | undefined;
-    try { marker = input.readMarker(join(input.resourcesPath, "package-type")); } catch { return "unknown"; }
+    try { marker = input.readMarker(pathApi.join(input.resourcesPath, "package-type")); } catch { return "unknown"; }
     if (input.platform === "linux" && input.appImagePath !== undefined) {
-      if (!safeString(input.appImagePath) || !isAbsolute(input.appImagePath)) return "unknown";
+      if (!safeString(input.appImagePath) || !posix.isAbsolute(input.appImagePath)) return "unknown";
       try { if (input.inspectAppImage(input.appImagePath)) return "appimage"; } catch { /* exact marker may still identify DEB */ }
     }
     if (input.platform === "win32" && marker === "windows\n") return "windows";
@@ -107,15 +136,22 @@ function manualInput(input: Readonly<{ openManual?: () => void | Promise<void>; 
 }
 
 export async function createUpdateController(input: Readonly<{
+  updatePolicy: PackagedUpdatePolicy;
   packageType: PackageType;
   loadUpdater(packageType: "windows" | "macos" | "appimage"): Promise<AutoUpdater> | AutoUpdater;
   openManual?: () => void | Promise<void>;
+  showPilotNotice?: () => void | Promise<void>;
   onError?: () => void;
   confirmRestart?: () => boolean | Promise<boolean>;
   every(callback: () => void, milliseconds: number): unknown;
   clearEvery(handle: unknown): void;
   unref(handle: unknown): void;
 }>): Promise<UpdateController> {
+  if (input.updatePolicy === "pilot") return manualController(manualInput({
+    ...(input.showPilotNotice === undefined ? {} : { openManual: input.showPilotNotice }),
+    ...(input.onError === undefined ? {} : { onError: input.onError })
+  }, true));
+  if (input.updatePolicy !== "production") return manualController(manualInput(input, false));
   if (input.packageType === "development") return manualController(manualInput(input, false));
   if (input.packageType === "deb" || input.packageType === "unknown") return manualController(manualInput(input, true));
   if (input.packageType !== "windows" && input.packageType !== "macos" && input.packageType !== "appimage") return manualController(manualInput(input, true));

@@ -9,7 +9,7 @@ import {
   statSync,
   type BigIntStats
 } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { posix } from "node:path";
 
 const APPIMAGE_TYPE2_HEADER_BYTES = 11;
 const APPIMAGE_MAGIC_OFFSET = 8;
@@ -17,10 +17,36 @@ const APPIMAGE_MAGIC = Object.freeze([0x41, 0x49, 0x02]);
 const EXPECTED_EXECUTABLE_NAME = "civcom";
 
 function safeAbsolutePath(value: unknown): value is string {
-  return typeof value === "string" && value !== "" && value.length <= 4096 && isAbsolute(value) && ![...value].some((character) => {
+  return typeof value === "string" && value !== "" && value.length <= 4096 && posix.isAbsolute(value) && ![...value].some((character) => {
     const code = character.charCodeAt(0);
     return code <= 31 || code === 127;
   });
+}
+
+export function isType2AppImageHeader(value: unknown): value is Uint8Array {
+  return value instanceof Uint8Array
+    && value.byteLength >= APPIMAGE_TYPE2_HEADER_BYTES
+    && value[0] === 0x7f
+    && value[1] === 0x45
+    && value[2] === 0x4c
+    && value[3] === 0x46
+    && APPIMAGE_MAGIC.every((byte, index) => value[APPIMAGE_MAGIC_OFFSET + index] === byte);
+}
+
+export function hasExpectedAppImageRuntimePaths(input: Readonly<{
+  appDir: unknown;
+  executablePath: unknown;
+  resourcesPath: unknown;
+}>): boolean {
+  try {
+    return safeAbsolutePath(input.appDir)
+      && safeAbsolutePath(input.executablePath)
+      && safeAbsolutePath(input.resourcesPath)
+      && input.executablePath === posix.join(input.appDir, EXPECTED_EXECUTABLE_NAME)
+      && input.resourcesPath === posix.join(input.appDir, "resources");
+  } catch {
+    return false;
+  }
 }
 
 function executable(mode: bigint): boolean {
@@ -49,10 +75,11 @@ function canonicalExecutable(path: unknown): path is string {
 }
 
 function validMountedRuntime(appDir: unknown, executablePath: unknown, resourcesPath: unknown): boolean {
+  if (!hasExpectedAppImageRuntimePaths({ appDir, executablePath, resourcesPath })) return false;
   if (!canonicalDirectory(appDir)) return false;
-  if (executablePath !== join(appDir, EXPECTED_EXECUTABLE_NAME) || !canonicalExecutable(executablePath)) return false;
-  if (resourcesPath !== join(appDir, "resources") || !canonicalDirectory(resourcesPath)) return false;
-  return canonicalExecutable(join(appDir, "AppRun"));
+  if (!canonicalExecutable(executablePath)) return false;
+  if (!canonicalDirectory(resourcesPath)) return false;
+  return canonicalExecutable(posix.join(appDir, "AppRun"));
 }
 
 /**
@@ -75,8 +102,7 @@ export function resolveVerifiedAppImageRuntime(input: Readonly<{
 
     const header = Buffer.alloc(APPIMAGE_TYPE2_HEADER_BYTES);
     if (readSync(descriptor, header, 0, header.length, 0) !== header.length) return undefined;
-    if (header[0] !== 0x7f || header[1] !== 0x45 || header[2] !== 0x4c || header[3] !== 0x46) return undefined;
-    if (!APPIMAGE_MAGIC.every((byte, index) => header[APPIMAGE_MAGIC_OFFSET + index] === byte)) return undefined;
+    if (!isType2AppImageHeader(header)) return undefined;
 
     const resolved = realpathSync(input.appImagePath);
     if (resolved !== input.appImagePath) return undefined;
