@@ -266,7 +266,7 @@ jobs:
         with:
           subject-path: release/assembled/*
       - name: Attest build SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e
         with:
           subject-path: release/assembled/*
           sbom-path: release/assembled/CivCom-build.spdx.json
