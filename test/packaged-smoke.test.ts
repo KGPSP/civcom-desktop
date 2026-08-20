@@ -12,7 +12,8 @@ describe("native packaged smoke harness", () => {
   });
 
   it("records only a visible self-contained data document under fixed user data", () => {
-    expect(packagedSmokeResultPath("/tmp/civcom-smoke")).toBe("/tmp/civcom-smoke/packaged-smoke.json");
+    expect(packagedSmokeResultPath("/tmp/civcom-smoke", "linux")).toBe("/tmp/civcom-smoke/packaged-smoke.json");
+    expect(packagedSmokeResultPath("D:\\Users\\runner\\CivCom", "win32")).toBe("D:\\Users\\runner\\CivCom\\packaged-smoke.json");
     expect(createPackagedSmokeResult({ windowVisible: true, loadedUrl: "data:text/html;charset=utf-8,test" })).toEqual({ schemaVersion: 1, status: "ok", windowVisible: true, loadedUrl: "data:text/html;charset=utf-8,test" });
     for (const input of [{ windowVisible: false, loadedUrl: "data:text/html,test" }, { windowVisible: true, loadedUrl: "https://civcom.soia.gov.pl/" }]) expect(() => createPackagedSmokeResult(input)).toThrow();
   });

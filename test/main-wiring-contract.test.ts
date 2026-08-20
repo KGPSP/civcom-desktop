@@ -50,6 +50,12 @@ describe("Electron main-process integration contract", () => {
     expect(main).toContain("createPackagedSmokeResult");
   });
 
+  it("routes the fail-closed packaged update policy to a Polish pilot notice", () => {
+    expect(main).toContain("detectPackagedUpdatePolicy");
+    expect(main).toContain("PILOT_UPDATE_NOTICE");
+    expect(main).toContain("showPilotNotice");
+  });
+
   it("routes the explicit unpackaged local seam through the production session and window wiring", () => {
     expect(main).toContain("resolveUnpackagedHarnessOptions");
     expect(main).toContain("CIVCOM_UNPACKAGED_HARNESS");

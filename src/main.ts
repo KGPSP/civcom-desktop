@@ -3,7 +3,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, write
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, win32 } from "node:path";
 import { BoundsStore, createFirstRunState, createOfflinePageUrl, createWebPreferences, escapeDesktopExecPath, isHiddenStart, makeLoginItemSettings, OFFLINE_RETRY_URL, reserveDownloadDestination, resolveLinuxAutostartExecutable, resolveUnpackagedHarnessOptions, type UnpackagedHarnessOptions } from "./desktop/shell.js";
-import { createUpdateController, detectPackageType, loadVerifiedUpdater, LATEST_RELEASE_PAGE, type PackageType, type UpdateController } from "./desktop/updater.js";
+import { createUpdateController, detectPackagedUpdatePolicy, detectPackageType, loadVerifiedUpdater, LATEST_RELEASE_PAGE, PILOT_UPDATE_NOTICE, type PackagedUpdatePolicy, type PackageType, type UpdateController } from "./desktop/updater.js";
 import { resolveVerifiedAppImageRuntime } from "./desktop/appimage-runtime.js";
 import { createPackagedSmokeResult, isPackagedSmokeRequested, packagedSmokeResultPath } from "./desktop/packaged-smoke.js";
 import { RotatingSafeLogger } from "./desktop/safe-logger.js";
@@ -322,13 +322,20 @@ function currentPackageType(): PackageType {
     inspectAppImage: (path) => resolveRuntimeAppImage(path) === path
   });
 }
-async function configureUpdater(logger: RotatingSafeLogger, packageType: PackageType): Promise<UpdateController> {
+function currentUpdatePolicy(): PackagedUpdatePolicy {
+  return detectPackagedUpdatePolicy({ isPackaged: app.isPackaged, appPath: app.getAppPath(), readMetadata: readOptional });
+}
+async function configureUpdater(logger: RotatingSafeLogger, packageType: PackageType, updatePolicy: PackagedUpdatePolicy): Promise<UpdateController> {
   return await createUpdateController({
+    updatePolicy,
     packageType,
     loadUpdater: loadVerifiedUpdater,
     openManual: async () => {
       const response = await dialog.showMessageBox({ type: "info", buttons: ["Otwórz stronę wydań", "Anuluj"], defaultId: 1, cancelId: 1, title: "CivCom", message: "Ten pakiet jest aktualizowany ręcznie. Otworzyć najnowsze wydanie CivCom?" });
       if (response.response === 0) await shell.openExternal(LATEST_RELEASE_PAGE);
+    },
+    showPilotNotice: async () => {
+      await dialog.showMessageBox({ type: "info", buttons: ["OK"], defaultId: 0, cancelId: 0, noLink: true, ...PILOT_UPDATE_NOTICE });
     },
     confirmRestart: async () => {
       const response = await dialog.showMessageBox({ type: "info", buttons: ["Uruchom ponownie", "Później"], defaultId: 1, cancelId: 1, title: "CivCom", message: "Aktualizacja jest gotowa. Uruchomić CivCom ponownie?" });
@@ -367,9 +374,10 @@ if (runtimeSandboxRejected) {
       const harness = unpackagedHarnessOptions();
       const logger = createLogger();
       const packageType = currentPackageType();
+      const updatePolicy = currentUpdatePolicy();
       lifecycleLogger = logger;
       logger.lifecycle("startup"); logger.lifecycle("version", app.getVersion());
-      configureSession(logger, harness); updater = await configureUpdater(logger, packageType);
+      configureSession(logger, harness); updater = await configureUpdater(logger, packageType, updatePolicy);
       if (harness === undefined) { createMenu(); trayAvailable = createTray(logger); }
       else trayAvailable = false;
       mainWindow = createWindow(startUrl, logger, harness);

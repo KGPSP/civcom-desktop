@@ -1,11 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const moduleUrl = new URL("../scripts/verify-workflows.mjs", import.meta.url).href;
 
 type WorkflowModule = Readonly<{
+  resolveProjectRoot(moduleUrl: string, platform: NodeJS.Platform): string;
   validateWorkflowSource(name: string, source: string): void;
   validateRepositoryAutomation(rootDirectory: string): Promise<void>;
 }>;
@@ -15,6 +17,23 @@ async function loadModule(): Promise<WorkflowModule> {
 }
 
 describe("GitHub automation policy", () => {
+  it("resolves a Windows workflow-verifier URL without duplicating the drive prefix", async () => {
+    const { resolveProjectRoot } = await loadModule();
+    expect(resolveProjectRoot("file:///D:/a/civcom-desktop/civcom-desktop/scripts/verify-workflows.mjs", "win32"))
+      .toBe("D:\\a\\civcom-desktop\\civcom-desktop");
+    expect(resolveProjectRoot("file:///home/runner/work/civcom-desktop/civcom-desktop/scripts/verify-workflows.mjs", "linux"))
+      .toBe("/home/runner/work/civcom-desktop/civcom-desktop");
+  });
+
+  it("treats a CRLF checkout as the same workflow while still rejecting a bare carriage return", async () => {
+    const { validateWorkflowSource } = await loadModule();
+    const ci = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+    const crlf = ci.replaceAll("\n", "\r\n");
+    expect(crlf).not.toBe(ci);
+    expect(() => validateWorkflowSource("ci.yml", crlf)).not.toThrow();
+    expect(() => validateWorkflowSource("ci.yml", ci.replace("name:", "name:\r"))).toThrow();
+  });
+
   it("uses only declared dependencies and its checked-in strict YAML parser", () => {
     const require = createRequire(import.meta.url);
     const packageJson = require("../package.json") as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
@@ -25,7 +44,7 @@ describe("GitHub automation policy", () => {
   });
   it("accepts exactly the checked-in least-privilege CI, live smoke, pilot, release, and Dependabot configuration", async () => {
     const { validateRepositoryAutomation } = await loadModule();
-    await expect(validateRepositoryAutomation(new URL("..", import.meta.url).pathname)).resolves.toBeUndefined();
+    await expect(validateRepositoryAutomation(fileURLToPath(new URL("..", import.meta.url)))).resolves.toBeUndefined();
   });
 
   it("rejects an incomplete Linux SUID sandbox setup before the anonymous Electron smoke", async () => {
@@ -46,7 +65,7 @@ describe("GitHub automation policy", () => {
       readFile(new URL(".github/workflows/pilot.yml", root), "utf8"),
       readFile(new URL(".github/workflows/release.yml", root), "utf8")
     ]);
-    await expect(validateRepositoryAutomation(root.pathname)).resolves.toBeUndefined();
+    await expect(validateRepositoryAutomation(fileURLToPath(root))).resolves.toBeUndefined();
     expect(`${ci}\n${live}\n${pilot}\n${release}`).not.toMatch(/windows-latest|ubuntu-latest/);
     expect(ci).toContain("xvfb-run -a npm run test:electron:local");
     expect(ci).not.toMatch(/test:live:anonymous|test:manual:production/);

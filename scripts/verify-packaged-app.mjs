@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { FuseState, FuseV1Options, FuseVersion, getCurrentFuseWire } from "@electron/fuses";
 import { verifyUpdateMetadataFiles } from "./release-contract.mjs";
 import { verifyFuseWire } from "./fuse-policy.mjs";
+import { createInstalledDebLayout, verifyInstalledDebInstallation } from "./linux-installed-deb.mjs";
+import { runPackagedCommand } from "./packaged-command.mjs";
 import { createLaunchPlan, createLinuxInspectionPlan, createTamperProbePlan, parseVerifierArguments, resolvePackagedLayout, validateAuthenticodeResult, validateLinuxDesktopEntry, validateMacAdHocSigningDetails, validateMacEntitlementKeys, validateMacInfoPlist, validateMacSigningDetails, validateSmokeResult, validateTamperProbeOutcome, validateUniversalArchitectures, validateWindowsPublisherSubject, verifyPackagedLayout } from "./packaged-app-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -17,9 +19,7 @@ const fusePackage = JSON.parse(await readFile(join(projectRoot, "node_modules", 
 if (fusePackage.version !== "2.1.3") throw new Error("Packaged verification requires direct @electron/fuses 2.1.3");
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: options.cwd ?? projectRoot, env: options.environment ?? process.env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: options.timeout ?? 60_000, shell: false });
-  if (result.error !== undefined || result.status !== 0) throw new Error(`Packaged verification command failed: ${command}`);
-  return `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  return runPackagedCommand(command, args, { cwd: options.cwd ?? projectRoot, environment: options.environment ?? process.env, timeout: options.timeout ?? 60_000 });
 }
 
 async function requireRegular(path, executable = false) {
@@ -102,7 +102,7 @@ function verifyWindows(layout, mode) {
   verifyAuthenticode(join(releaseDirectory, downloads.assets.windowsInstaller), publisher);
 }
 
-async function verifyLinux(layout) {
+async function verifyLinux(layout, mode) {
   const maintainer = requiredEnvironment("CIVCOM_LINUX_MAINTAINER", /^[^<>]{2,100} <[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}>$/i);
   const deb = join(releaseDirectory, downloads.assets.linuxDeb);
   if (run("dpkg-deb", ["--field", deb, "Package"]).trim() !== "civcom") throw new Error("Unexpected DEB package name");
@@ -119,6 +119,11 @@ async function verifyLinux(layout) {
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+  const installedLayout = createInstalledDebLayout();
+  await verifyInstalledDebInstallation(installedLayout);
+  await verifyPackagedLayout(installedLayout, "deb", mode, packageMetadata.version);
+  verifyFuseWire(await getCurrentFuseWire(installedLayout.executable), { FuseState, FuseV1Options, FuseVersion });
+  return installedLayout;
 }
 
 async function smoke(target, layout) {
@@ -169,7 +174,7 @@ function rawProbeLaunch(plan, cwd) {
   return spawnSync(plan.command, plan.args, { cwd, env: plan.environment, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, timeout: 30_000, killSignal: "SIGKILL", shell: false });
 }
 
-async function verifyAsarTamperResistance(target, layout) {
+async function verifyAsarTamperResistance(target, layout, mode) {
   if (target === "linux") return;
   const scratch = await mkdtemp(join(tmpdir(), "civcom-asar-tamper-"));
   try {
@@ -177,7 +182,7 @@ async function verifyAsarTamperResistance(target, layout) {
     for (const attempt of probe.attempts) {
       await mkdir(dirname(attempt.copyRoot), { recursive: true, mode: 0o700 });
       await cp(probe.sourceRoot, attempt.copyRoot, { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true, verbatimSymlinks: true });
-      await verifyPackagedLayout(attempt, target === "windows" ? "windows" : "macos");
+      await verifyPackagedLayout(attempt, target === "windows" ? "windows" : "macos", mode, packageMetadata.version);
       verifyFuseWire(await getCurrentFuseWire(attempt.executable), { FuseState, FuseV1Options, FuseVersion });
       if (attempt.kind === "tampered-asar") await mutateAsarByte(join(attempt.resources, "app.asar"));
       else await installLooseProbe(attempt.resources);
@@ -202,14 +207,15 @@ export async function verifyPackagedApplication(argumentsList = process.argv.sli
   const nativeTarget = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : process.platform === "linux" ? "linux" : "unsupported";
   if (target !== nativeTarget) throw new Error("Packaged verification must run on its native platform");
   const layout = resolvePackagedLayout({ target, releaseDirectory });
-  await verifyPackagedLayout(layout, target === "linux" ? "deb" : target);
+  await verifyPackagedLayout(layout, target === "linux" ? "deb" : target, mode, packageMetadata.version);
   verifyFuseWire(await getCurrentFuseWire(layout.executable), { FuseState, FuseV1Options, FuseVersion });
   await verifyMetadata(target);
   if (target === "macos") await verifyMac(layout, mode);
   else if (target === "windows") verifyWindows(layout, mode);
-  else await verifyLinux(layout);
-  await smoke(target, layout);
-  await verifyAsarTamperResistance(target, layout);
+  const smokeLayout = target === "linux" ? await verifyLinux(layout, mode) : layout;
+  await smoke(target, smokeLayout);
+  if (target === "linux" && mode === "production") await smoke(target, layout);
+  await verifyAsarTamperResistance(target, layout, mode);
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await verifyPackagedApplication();
