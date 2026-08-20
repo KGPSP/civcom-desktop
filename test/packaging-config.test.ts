@@ -15,6 +15,14 @@ function loadFactory(): BuilderFactory {
 const base = Object.freeze({ CIVCOM_BUILD_MODE: "pilot" });
 
 describe("effective electron-builder configuration", () => {
+  it("pins package markers to exact LF bytes on every checkout platform", () => {
+    const attributes = readFileSync(new URL("../.gitattributes", import.meta.url), "utf8");
+    expect(attributes).toContain("build/package-type-windows text eol=lf");
+    expect(attributes).toContain("build/package-type-macos text eol=lf");
+    expect(readFileSync(new URL("../build/package-type-windows", import.meta.url))).toEqual(Buffer.from("windows\n", "utf8"));
+    expect(readFileSync(new URL("../build/package-type-macos", import.meta.url))).toEqual(Buffer.from("macos\n", "utf8"));
+  });
+
   it("exposes the required Node 24 verification and packaging commands", () => {
     const packageJson = require("../package.json") as { author: string; homepage: string; engines: Record<string, string>; scripts: Record<string, string> };
     expect(packageJson.author).toBe("Komenda Główna Państwowej Straży Pożarnej — Biuro Informatyki i Łączności");
