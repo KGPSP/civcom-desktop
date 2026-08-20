@@ -26,7 +26,8 @@ describe("packaged verifier command diagnostics", () => {
     }
     expect(error).toBeInstanceOf(Error);
     const message = (error as Error).message;
-    expect(message).toMatch(/^Packaged verification command failed: node; status=17; category=user-namespace-denied$/);
+    const nodeLabel = process.execPath.replaceAll("\\", "/").split("/").at(-1);
+    expect(message).toBe(`Packaged verification command failed: ${nodeLabel}; status=17; category=user-namespace-denied`);
     expect(message).not.toContain("operator");
     expect(message).not.toContain("secret-room-token");
     expect(message).not.toContain("civcom.soia.info");
@@ -35,8 +36,15 @@ describe("packaged verifier command diagnostics", () => {
 
   it("distinguishes a timeout without exposing the command body", async () => {
     const { runPackagedCommand } = await loadModule();
-    expect(() => runPackagedCommand(process.execPath, ["-e", "setTimeout(() => {}, 10_000)", "sensitive-marker"], { timeout: 20 }))
-      .toThrow(/^Packaged verification command failed: node; status=none; error=ETIMEDOUT; category=timeout$/);
+    let error: unknown;
+    try {
+      runPackagedCommand(process.execPath, ["-e", "setTimeout(() => {}, 10_000)", "sensitive-marker"], { timeout: 20 });
+    } catch (value) {
+      error = value;
+    }
+    expect(error).toBeInstanceOf(Error);
+    const nodeLabel = process.execPath.replaceAll("\\", "/").split("/").at(-1);
+    expect((error as Error).message).toBe(`Packaged verification command failed: ${nodeLabel}; status=none; error=ETIMEDOUT; category=timeout`);
   });
 
   it("preserves successful stdout and stderr for the verifier's strict parsers", async () => {

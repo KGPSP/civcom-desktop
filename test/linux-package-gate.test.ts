@@ -19,6 +19,12 @@ type InstalledDebModule = Readonly<{
   validateInstalledDebPermissions(input: Readonly<Record<string, Readonly<{ uid: number; gid: number; mode: number }>>>): void;
 }>;
 
+async function readLf(url: URL): Promise<string> {
+  const source = await readFile(url, "utf8");
+  if (/\r(?!\n)/.test(source)) throw new Error("Linux package fixture contains a bare carriage return");
+  return source.replaceAll("\r\n", "\n");
+}
+
 const packageCommand = "      - run: npm run ${{ matrix.package-script }}\n";
 const installStep = [
   "      - name: Install Linux DEB for sandboxed smoke",
@@ -95,7 +101,7 @@ function withRequiredLinuxInstall(source: string): string {
 describe("native Linux pilot package gate", () => {
   it("requires the freshly built DEB to be installed before packaged verification", async () => {
     const { validateWorkflowSource } = await import(workflowModuleUrl) as WorkflowModule;
-    const current = await readFile(new URL("../.github/workflows/pilot.yml", import.meta.url), "utf8");
+    const current = await readLf(new URL("../.github/workflows/pilot.yml", import.meta.url));
     const candidate = withRequiredLinuxInstall(current);
 
     expect(() => validateWorkflowSource("pilot.yml", candidate)).not.toThrow();
@@ -145,7 +151,7 @@ describe("native Linux pilot package gate", () => {
 
   it("keeps the production Linux verifier on the same installed DEB gate", async () => {
     const { validateWorkflowSource } = await import(workflowModuleUrl) as WorkflowModule;
-    const current = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+    const current = await readLf(new URL("../.github/workflows/release.yml", import.meta.url));
     const marker = "      - run: npm run package:linux\n";
     const candidate = current.includes("name: Install Linux DEB for sandboxed smoke") ? current : current.replace(marker, `${marker}${releaseInstallStep}`);
     expect(candidate).toContain(releaseInstallStep);
@@ -155,8 +161,8 @@ describe("native Linux pilot package gate", () => {
 
   it("withholds AppImage from the internal pilot and retains its smoke gate for production", async () => {
     const { validateWorkflowSource } = await import(workflowModuleUrl) as WorkflowModule;
-    const pilot = await readFile(new URL("../.github/workflows/pilot.yml", import.meta.url), "utf8");
-    const verifier = await readFile(new URL("../scripts/verify-packaged-app.mjs", import.meta.url), "utf8");
+    const pilot = await readLf(new URL("../.github/workflows/pilot.yml", import.meta.url));
+    const verifier = await readLf(new URL("../scripts/verify-packaged-app.mjs", import.meta.url));
     expect(pilot).toContain(linuxPilotStageStep);
     expect(() => validateWorkflowSource("pilot.yml", pilot.replace(linuxPilotStageStep, ""))).toThrow(/Linux DEB-only pilot staging/i);
     expect(verifier).toContain('if (target === "linux" && mode === "production") await smoke(target, layout);');

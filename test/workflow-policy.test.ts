@@ -16,6 +16,12 @@ async function loadModule(): Promise<WorkflowModule> {
   return await import(moduleUrl) as WorkflowModule;
 }
 
+async function readLf(url: URL): Promise<string> {
+  const source = await readFile(url, "utf8");
+  if (/\r(?!\n)/.test(source)) throw new Error("workflow fixture contains a bare carriage return");
+  return source.replaceAll("\r\n", "\n");
+}
+
 describe("GitHub automation policy", () => {
   it("resolves a Windows workflow-verifier URL without duplicating the drive prefix", async () => {
     const { resolveProjectRoot } = await loadModule();
@@ -27,7 +33,7 @@ describe("GitHub automation policy", () => {
 
   it("treats a CRLF checkout as the same workflow while still rejecting a bare carriage return", async () => {
     const { validateWorkflowSource } = await loadModule();
-    const ci = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+    const ci = await readLf(new URL("../.github/workflows/ci.yml", import.meta.url));
     const crlf = ci.replaceAll("\n", "\r\n");
     expect(crlf).not.toBe(ci);
     expect(() => validateWorkflowSource("ci.yml", crlf)).not.toThrow();
@@ -49,7 +55,7 @@ describe("GitHub automation policy", () => {
 
   it("rejects an incomplete Linux SUID sandbox setup before the anonymous Electron smoke", async () => {
     const { validateWorkflowSource } = await loadModule();
-    const live = await readFile(new URL("../.github/workflows/anonymous-live-smoke.yml", import.meta.url), "utf8");
+    const live = await readLf(new URL("../.github/workflows/anonymous-live-smoke.yml", import.meta.url));
     expect(() => validateWorkflowSource("anonymous-live-smoke.yml", live)).not.toThrow();
     const weakened = live.replace("sudo chmod 4755", "sudo chmod 0755");
     expect(weakened).not.toBe(live);
@@ -60,10 +66,10 @@ describe("GitHub automation policy", () => {
     const { validateRepositoryAutomation } = await loadModule();
     const root = new URL("..", import.meta.url);
     const [ci, live, pilot, release] = await Promise.all([
-      readFile(new URL(".github/workflows/ci.yml", root), "utf8"),
-      readFile(new URL(".github/workflows/anonymous-live-smoke.yml", root), "utf8"),
-      readFile(new URL(".github/workflows/pilot.yml", root), "utf8"),
-      readFile(new URL(".github/workflows/release.yml", root), "utf8")
+      readLf(new URL(".github/workflows/ci.yml", root)),
+      readLf(new URL(".github/workflows/anonymous-live-smoke.yml", root)),
+      readLf(new URL(".github/workflows/pilot.yml", root)),
+      readLf(new URL(".github/workflows/release.yml", root))
     ]);
     await expect(validateRepositoryAutomation(fileURLToPath(root))).resolves.toBeUndefined();
     expect(`${ci}\n${live}\n${pilot}\n${release}`).not.toMatch(/windows-latest|ubuntu-latest/);
@@ -96,9 +102,9 @@ describe("GitHub automation policy", () => {
 
   it("rejects mutable actions, write-capable pilots, PR secrets, release publication in pilots, and non-draft-first production", async () => {
     const { validateWorkflowSource } = await loadModule();
-    const live = await readFile(new URL("../.github/workflows/anonymous-live-smoke.yml", import.meta.url), "utf8");
-    const pilot = await readFile(new URL("../.github/workflows/pilot.yml", import.meta.url), "utf8");
-    const release = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+    const live = await readLf(new URL("../.github/workflows/anonymous-live-smoke.yml", import.meta.url));
+    const pilot = await readLf(new URL("../.github/workflows/pilot.yml", import.meta.url));
+    const release = await readLf(new URL("../.github/workflows/release.yml", import.meta.url));
     for (const hostile of [
       live.replace("branches:\n      - main", "branches:\n      - feature"),
       live.replace("workflow_dispatch:", "pull_request:"),
